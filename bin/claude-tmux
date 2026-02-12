@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+#
+# claude-tmux - Launch Claude CLI with tmux target tracking
+#
+# This wrapper script sets CLAUDE_TMUX_TARGET environment variable
+# to the current tmux pane, enabling the session dashboard to inject
+# prompts into this Claude session.
+#
+# Usage:
+#   claude-tmux [claude args...]
+#
+# Examples:
+#   claude-tmux                    # Start claude in current tmux pane
+#   claude-tmux --help             # Pass args to claude
+#   claude-tmux -p "prompt"        # Start with initial prompt
+#
+# Requirements:
+#   - Must be run inside a tmux session
+#   - claude CLI must be in PATH
+#
+
+set -e
+
+# Check if we're inside tmux
+if [ -z "$TMUX" ]; then
+    echo "Error: claude-tmux must be run inside a tmux session" >&2
+    echo "Start tmux first, then run this command" >&2
+    exit 1
+fi
+
+# Check if claude is available
+if ! command -v claude &> /dev/null; then
+    echo "Error: 'claude' command not found in PATH" >&2
+    exit 1
+fi
+
+# Get the current tmux target (session:window.pane format)
+CLAUDE_TMUX_TARGET=$(tmux display -p '#{session_name}:#{window_index}.#{pane_index}')
+
+if [ -z "$CLAUDE_TMUX_TARGET" ]; then
+    echo "Error: Could not determine tmux target" >&2
+    exit 1
+fi
+
+export CLAUDE_TMUX_TARGET
+
+echo "Starting Claude with tmux target: $CLAUDE_TMUX_TARGET"
+
+# Launch claude with all passed arguments
+exec claude "$@"
