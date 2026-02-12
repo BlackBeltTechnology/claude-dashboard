@@ -3,21 +3,20 @@
  * Scans for JSONL session files, discovers subagents, and extracts metadata
  *
  * State detection logic:
- * - Active: debug log modified <5s ago
- * - Waiting: assistant message with no tool_use AND debug log stale >10s
- * - Idle: debug log not modified for >60s
- * - Completed: session has summary entry or no recent activity
+ * - Active: debug log modified <10s ago
+ * - Waiting: idle_prompt marker in debug log OR (assistant message with no tool_use AND turn_duration entry)
+ * - Idle: default state (not active, not waiting, not completed)
+ * - Completed: session has SessionEnd marker in debug log or summary entry in JSONL
  */
 
-import { readFile, readdir, stat } from 'fs/promises';
+import { readFile, readdir, stat, access } from 'fs/promises';
+import { readFileSync, readdirSync } from 'fs';
 import { join, basename, dirname } from 'path';
-import type { Session, SessionState, AnyNode, SubagentNode, MessageNode, ToolNode, ToolUseInfo } from 'shared';
+import type { Session, SessionState, AnyNode, SubagentNode, SkillNode, MessageNode, ToolNode, ToolUseInfo, UserPromptNode, ClearMarkerNode } from 'shared';
 import { parseJSONL, extractMetadata, type ParsedEntry } from './jsonl-parser.js';
 
 // State detection thresholds (in milliseconds)
-const ACTIVE_THRESHOLD_MS = 5000;     // <5s = active
-const WAITING_THRESHOLD_MS = 10000;   // >10s with assistant waiting = waiting
-const IDLE_THRESHOLD_MS = 60000;      // >60s = idle
+const ACTIVE_THRESHOLD_MS = 10000;     // <10s = active
 
 // Session index entry from sessions-index.json
 interface SessionIndexEntry {
@@ -40,6 +39,48 @@ interface SessionIndex {
 }
 
 /**
+ * Extract human-readable text from a user message that may contain XML system tags.
+ * Returns undefined if the message has no meaningful user text (skip to next entry).
+ */
+function extractReadablePrompt(content: string): string | undefined {
+  // Text before the first XML tag is the user's actual typed input
+  const beforeXml = content.split('<')[0].trim();
+  if (beforeXml.length > 0) {
+    // Take first line only
+    return beforeXml.split('\n')[0].trim();
+  }
+
+  // Content starts with XML — try to extract slash command name
+  const commandNameMatch = content.match(/<command-name>\s*([^<]+?)\s*<\/command-name>/);
+  if (commandNameMatch) {
+    return commandNameMatch[1].trim();
+  }
+
+  // Try command-message tag (older format)
+  const commandMessageMatch = content.match(/<command-message>\s*([^<]+?)\s*<\/command-message>/);
+  if (commandMessageMatch) {
+    return '/' + commandMessageMatch[1].trim();
+  }
+
+  // No recognizable user text — skip this entry
+  return undefined;
+}
+
+/**
+ * Check if an extracted prompt is a skippable command (e.g., /clear).
+ * Handles both raw text format (/clear) and XML-extracted format (clear).
+ */
+function isSkippableCommand(prompt: string): boolean {
+  const normalized = prompt.toLowerCase().trim();
+  return (
+    normalized === 'clear' ||
+    normalized === '/clear' ||
+    normalized.startsWith('/clear ') ||
+    normalized.startsWith('clear ')
+  );
+}
+
+/**
  * Get the start of today (midnight) as a timestamp
  */
 function getStartOfToday(): number {
@@ -53,6 +94,152 @@ function getStartOfToday(): number {
 function isFromToday(timestamp: number): boolean {
   return timestamp >= getStartOfToday();
 }
+
+/**
+ * Extract agent name from a markdown filename (e.g., 'gsd-planner.md' -> 'gsd-planner')
+ */
+function extractAgentNameFromPath(filename: string): string {
+  return basename(filename, '.md');
+}
+
+/**
+ * Agent color mapping for named colors to hex values
+ */
+const AGENT_COLOR_MAP: Record<string, string> = {
+  cyan: '#06b6d4',
+  green: '#22c55e',
+  orange: '#f97316',
+  yellow: '#eab308',
+  blue: '#3b82f6',
+  purple: '#8b5cf6',
+  red: '#ef4444',
+  pink: '#ec4899',
+};
+
+/**
+ * Agent info containing name and color
+ */
+interface AgentInfo {
+  name: string;
+  color?: string;
+}
+
+/**
+ * Load agent names and colors from ~/.claude/agents/*.md files
+ * Returns a Map mapping agent filenames to their info from YAML frontmatter
+ */
+let agentNamesCache: Map<string, AgentInfo> | null = null;
+
+async function loadAgentNames(): Promise<Map<string, AgentInfo>> {
+  if (agentNamesCache) {
+    return agentNamesCache;
+  }
+
+  const agentNames = new Map<string, AgentInfo>();
+  const agentsDir = join(process.env.HOME || '/home/botond', '.claude', 'agents');
+
+  try {
+    const entries = await readdir(agentsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith('.md')) {
+        try {
+          const filePath = join(agentsDir, entry.name);
+          const content = await readFile(filePath, 'utf-8');
+
+          // Parse YAML frontmatter
+          const frontmatterMatch = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n/);
+          if (frontmatterMatch) {
+            const yamlContent = frontmatterMatch[1];
+            const nameMatch = yamlContent.match(/^name:\s*(.+?)\s*$/m);
+            const colorMatch = yamlContent.match(/^color:\s*(.+?)\s*$/m);
+
+            if (nameMatch) {
+              const agentName = nameMatch[1].trim();
+              let agentColor: string | undefined;
+
+              if (colorMatch) {
+                const colorValue = colorMatch[1].trim().toLowerCase();
+                // Resolve named color to hex, or use as-is if already hex
+                agentColor = AGENT_COLOR_MAP[colorValue] || colorValue;
+              }
+
+              agentNames.set(extractAgentNameFromPath(entry.name), {
+                name: agentName,
+                color: agentColor,
+              });
+            }
+          }
+        } catch {
+          // Skip files that can't be read
+        }
+      }
+    }
+  } catch {
+    // Agents directory may not exist
+  }
+
+  agentNamesCache = agentNames;
+  return agentNames;
+}
+
+/**
+ * Synchronous version of loadAgentNames for use in synchronous contexts
+ */
+function loadAgentNamesSync(): Map<string, AgentInfo> {
+  if (agentNamesCache) {
+    return agentNamesCache;
+  }
+
+  const agentNames = new Map<string, AgentInfo>();
+  const agentsDir = join(process.env.HOME || '/home/botond', '.claude', 'agents');
+
+  try {
+    const entries = readdirSync(agentsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith('.md')) {
+        try {
+          const filePath = join(agentsDir, entry.name);
+          const content = readFileSync(filePath, 'utf-8');
+
+          // Parse YAML frontmatter
+          const frontmatterMatch = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n/);
+          if (frontmatterMatch) {
+            const yamlContent = frontmatterMatch[1];
+            const nameMatch = yamlContent.match(/^name:\s*(.+?)\s*$/m);
+            const colorMatch = yamlContent.match(/^color:\s*(.+?)\s*$/m);
+
+            if (nameMatch) {
+              const agentName = nameMatch[1].trim();
+              let agentColor: string | undefined;
+
+              if (colorMatch) {
+                const colorValue = colorMatch[1].trim().toLowerCase();
+                // Resolve named color to hex, or use as-is if already hex
+                agentColor = AGENT_COLOR_MAP[colorValue] || colorValue;
+              }
+
+              const key = extractAgentNameFromPath(entry.name);
+              agentNames.set(key, {
+                name: agentName,
+                color: agentColor,
+              });
+            }
+          }
+        } catch {
+          // Skip files that can't be read
+        }
+      }
+    }
+  } catch {
+    // Agents directory may not exist
+  }
+
+  agentNamesCache = agentNames;
+  return agentNames;
+}
+
+// Initialize the cache at module load time
+loadAgentNamesSync();
 
 /**
  * Discover all project directories under ~/.claude/projects/
@@ -173,10 +360,89 @@ export async function getDebugLogMtime(claudeDir: string, sessionId: string): Pr
 }
 
 /**
+ * Check if a session has been closed by looking for the SessionEnd hook event
+ * in the debug log file. When a user exits Claude Code, the debug log records:
+ *   "Getting matching hook commands for SessionEnd with query: prompt_input_exit"
+ * This is the only reliable indicator that confirms a session was closed.
+ *
+ * @param claudeDir - Base Claude directory (~/.claude)
+ * @param sessionId - Session UUID
+ * @returns true if the session is confirmed closed
+ */
+export async function isSessionClosed(claudeDir: string, sessionId: string): Promise<boolean> {
+  const debugLogPath = join(claudeDir, 'debug', `${sessionId}.txt`);
+  try {
+    const content = await readFile(debugLogPath, 'utf-8');
+    // Only match SessionEnd with query: prompt_input_exit (not "clear" or other queries)
+    return content.includes('Getting matching hook commands for SessionEnd with query: prompt_input_exit');
+  } catch {
+    // No debug log — can't confirm closed, treat as unknown
+    return false;
+  }
+}
+
+/**
+ * Get the timestamp of the SessionEnd marker from the debug log.
+ * Returns null if no SessionEnd marker exists or if the timestamp can't be parsed.
+ *
+ * @param claudeDir - Base Claude directory (~/.claude)
+ * @param sessionId - Session UUID
+ * @returns Timestamp in ms of the SessionEnd marker, or null
+ */
+export async function getSessionEndTimestamp(claudeDir: string, sessionId: string): Promise<number | null> {
+  const debugLogPath = join(claudeDir, 'debug', `${sessionId}.txt`);
+  try {
+    const content = await readFile(debugLogPath, 'utf-8');
+    // Find the SessionEnd line with prompt_input_exit and extract its timestamp
+    const sessionEndMatch = content.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z).*Getting matching hook commands for SessionEnd with query: prompt_input_exit/);
+    if (sessionEndMatch) {
+      return new Date(sessionEndMatch[1]).getTime();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the full debug log content for a session.
+ * Returns null if the file cannot be read.
+ */
+export async function readDebugLogContent(claudeDir: string, sessionId: string): Promise<string | null> {
+  const debugLogPath = join(claudeDir, 'debug', `${sessionId}.txt`);
+  try {
+    return await readFile(debugLogPath, 'utf-8');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check if the debug log contains the idle_prompt marker.
+ * This indicates the session is waiting for user input.
+ */
+export async function hasIdlePromptMarker(claudeDir: string, sessionId: string): Promise<boolean> {
+  const debugLogPath = join(claudeDir, 'debug', `${sessionId}.txt`);
+  try {
+    // Read the last 2000 bytes to find idle_prompt marker efficiently
+    const content = await readFile(debugLogPath, 'utf-8');
+    return content.includes('idle_prompt');
+  } catch {
+    // No debug log — can't determine
+    return false;
+  }
+}
+
+/**
  * Check if the last assistant message has no tool_use blocks
  * This indicates the assistant is waiting for user input
  */
-function isAssistantWaitingForUser(entries: ParsedEntry[]): boolean {
+function isAssistantWaitingForUser(entries: ParsedEntry[], hasIdlePrompt?: boolean): boolean {
+  // If idle_prompt marker is present in debug log, session is definitely waiting
+  if (hasIdlePrompt) {
+    return true;
+  }
+
   if (entries.length === 0) return false;
 
   const lastEntry = entries[entries.length - 1];
@@ -190,6 +456,18 @@ function isAssistantWaitingForUser(entries: ParsedEntry[]): boolean {
 }
 
 /**
+ * Check if there's a turn_duration entry in the last few entries.
+ * This indicates a turn completed and the session is waiting for user input.
+ */
+function hasTurnDurationEntry(entries: ParsedEntry[]): boolean {
+  if (entries.length === 0) return false;
+
+  // Check the last 5 entries for a 'result' type entry (turn completed)
+  const lastEntries = entries.slice(-5);
+  return lastEntries.some(entry => entry.type === 'result');
+}
+
+/**
  * Check if session has a completion indicator (summary entry)
  */
 function hasCompletionIndicator(entries: ParsedEntry[]): boolean {
@@ -199,22 +477,26 @@ function hasCompletionIndicator(entries: ParsedEntry[]): boolean {
 }
 
 /**
- * Determine session state based on debug log mtime and JSONL content
+ * Determine session state based on debug log mtime, JSONL content, and closed status.
  *
  * State priority:
- * 1. Completed - has summary entry
- * 2. Active - debug log modified <5s ago
+ * 1. Completed - session closed (SessionEnd in debug log) AND no activity after SessionEnd, or has summary entry
+ * 2. Active - debug log modified <10s ago
  * 3. Waiting - assistant message with no tool_use, debug log stale >10s
- * 4. Idle - no activity >60s
  *
  * @param entries - Parsed JSONL entries
  * @param debugLogMtime - Debug log modification time (ms), or null if no debug log
  * @param fallbackLastActivity - Fallback timestamp from JSONL if no debug log
+ * @param sessionClosed - Whether the debug log confirms the session was closed
+ * @param sessionEndTimestamp - Timestamp when SessionEnd marker was written (ms), or null
  */
 export function determineSessionState(
   entries: ParsedEntry[],
   debugLogMtime: number | null,
-  fallbackLastActivity?: number
+  fallbackLastActivity?: number,
+  sessionClosed?: boolean,
+  hasIdlePrompt?: boolean,
+  sessionEndTimestamp?: number | null
 ): SessionState {
   const now = Date.now();
 
@@ -222,37 +504,35 @@ export function determineSessionState(
   const lastActivity = debugLogMtime ?? fallbackLastActivity ?? now;
   const timeSinceActivity = now - lastActivity;
 
-  // 1. Check for completion indicators first
+  // 1. Completed: session closed (SessionEnd in debug log) or has summary entry
+  // BUT: If JSONL has activity AFTER SessionEnd timestamp, session was reopened
+  if (sessionClosed) {
+    // If we have a SessionEnd timestamp and JSONL activity after it, session was reopened
+    if (sessionEndTimestamp && fallbackLastActivity && fallbackLastActivity > sessionEndTimestamp) {
+      // Session was reopened, continue with normal state detection
+    } else {
+      // Session is genuinely closed
+      return 'completed';
+    }
+  }
+
   if (hasCompletionIndicator(entries)) {
     return 'completed';
   }
 
-  // 2. Active state: debug log modified <5s ago
+  // 2. Active: debug log modified <10s ago
   if (timeSinceActivity < ACTIVE_THRESHOLD_MS) {
     return 'active';
   }
 
-  // 3. Waiting state: assistant message with no tool_use AND debug log stale >10s
-  if (timeSinceActivity >= WAITING_THRESHOLD_MS && isAssistantWaitingForUser(entries)) {
+  // 3. Waiting: idle_prompt in debug log OR (assistant message with no tool_use + turn_duration)
+  const waiting = isAssistantWaitingForUser(entries, hasIdlePrompt);
+  if (waiting || hasTurnDurationEntry(entries)) {
     return 'waiting';
   }
 
-  // 4. Idle state: no activity >60s
-  if (timeSinceActivity >= IDLE_THRESHOLD_MS) {
-    return 'idle';
-  }
-
-  // Default: if between 5-60s and not waiting for user, still consider active
-  // (might be processing, running tools, etc.)
-  return 'active';
-}
-
-/**
- * Legacy overload for backward compatibility - uses JSONL timestamp only
- * @deprecated Use the version with debugLogMtime parameter for accurate state detection
- */
-export function determineSessionStateLegacy(entries: ParsedEntry[], lastActivity: number): SessionState {
-  return determineSessionState(entries, null, lastActivity);
+  // 4. Idle (default): not active, not waiting, not completed
+  return 'idle';
 }
 
 /**
@@ -261,6 +541,15 @@ export function determineSessionStateLegacy(entries: ParsedEntry[], lastActivity
 export function buildNodes(entries: ParsedEntry[]): AnyNode[] {
   const nodes: AnyNode[] = [];
   const processedUuids = new Set<string>();
+  let clearCount = 0;
+
+  // Build tool result lookup map
+  const toolResults = new Map<string, ParsedEntry['toolResult']>();
+  for (const entry of entries) {
+    if (entry.toolResult) {
+      toolResults.set(entry.toolResult.toolUseId, entry.toolResult);
+    }
+  }
 
   for (const entry of entries) {
     // Skip duplicates (same uuid)
@@ -292,12 +581,55 @@ export function buildNodes(entries: ParsedEntry[]): AnyNode[] {
         }] : undefined,
       };
       nodes.push(messageNode);
+
+      // Create UserPromptNode or ClearMarkerNode from user message
+      if (entry.content) {
+        const extracted = extractReadablePrompt(entry.content);
+
+        if (extracted) {
+          // Check if this is a /clear command
+          if (isSkippableCommand(extracted)) {
+            const clearNode: ClearMarkerNode = {
+              id: `clear-${entry.uuid}`,
+              type: 'clear-marker',
+              parentId: entry.parentUuid,
+              state,
+              timestamp: entry.timestamp,
+              clearIndex: clearCount++,
+            };
+            nodes.push(clearNode);
+          } else {
+            // Create UserPromptNode for regular user messages
+            const commandNameMatch = entry.content.match(/<command-name>\s*([^<]+?)\s*<\/command-name>/);
+            const hasXml = entry.content.includes('<');
+
+            const userPromptNode: UserPromptNode = {
+              id: `prompt-${entry.uuid}`,
+              type: 'user-prompt',
+              parentId: entry.parentUuid,
+              state,
+              timestamp: entry.timestamp,
+              promptText: extracted,
+              commandName: commandNameMatch ? commandNameMatch[1].trim() : undefined,
+              commandMetadata: hasXml ? entry.content.slice(0, 500) : undefined,
+              isCommand: !!commandNameMatch,
+            };
+            nodes.push(userPromptNode);
+          }
+        }
+      }
     } else if (entry.role === 'assistant') {
       // Check for tool uses that spawn subagents or skills
       if (entry.toolUses && entry.toolUses.length > 0) {
         for (const tool of entry.toolUses) {
           if (tool.name === 'Task') {
             // This is a subagent invocation
+            const agentType = (tool.input.subagent_type as string) || 'unknown';
+            const agentInfoMap = loadAgentNamesSync();
+            const agentInfo = agentInfoMap.get(agentType);
+            const agentName = agentInfo?.name;
+            const agentColor = agentInfo?.color;
+
             const subagentNode: SubagentNode = {
               id: tool.id,
               type: 'subagent',
@@ -305,12 +637,40 @@ export function buildNodes(entries: ParsedEntry[]): AnyNode[] {
               state,
               timestamp: entry.timestamp,
               agentId: tool.id.slice(-7), // Use last 7 chars as agent ID approximation
-              agentType: (tool.input.subagent_type as string) || 'unknown',
+              agentType,
+              agentName,
+              agentColor,
               description: (tool.input.description as string) || undefined,
+              // NEW metadata
+              prompt: (tool.input.prompt as string) || undefined,
+              model: (tool.input.model as string) || undefined,
+              sourceFilePath: agentType !== 'unknown'
+                ? `~/.claude/agents/${agentType}.md`
+                : undefined,
             };
             nodes.push(subagentNode);
+          } else if (tool.name === 'Skill') {
+            // This is a skill invocation
+            const skillInput = tool.input;
+            const skillName = (skillInput.skill as string) || 'unknown';
+            const toolResult = toolResults.get(tool.id);
+            const skillNode: SkillNode = {
+              id: tool.id,
+              type: 'skill',
+              parentId: entry.uuid,
+              state,
+              timestamp: entry.timestamp,
+              skillName,
+              sourceFilePath: `~/.claude/skills/${skillName}/SKILL.md`,
+              commandName: toolResult?.commandName,
+              success: toolResult?.success,
+              prompt: skillInput.prompt as string | undefined,
+              result: toolResult?.content,
+            };
+            nodes.push(skillNode);
           } else {
             // Regular tool call
+            const toolResult = toolResults.get(tool.id);
             const toolNode: ToolNode = {
               id: tool.id,
               type: 'tool',
@@ -319,6 +679,7 @@ export function buildNodes(entries: ParsedEntry[]): AnyNode[] {
               timestamp: entry.timestamp,
               toolName: tool.name,
               input: tool.input,
+              output: toolResult?.content,
             };
             nodes.push(toolNode);
           }
@@ -345,8 +706,11 @@ export function buildNodes(entries: ParsedEntry[]): AnyNode[] {
 
 /**
  * Parse a single session file and build Session object
+ * @param filePath - Path to the JSONL session file
+ * @param indexEntry - Optional session index entry for metadata enrichment
+ * @param claudeDir - Optional Claude base dir (~/.claude) for debug log checks
  */
-export async function parseSessionFile(filePath: string, indexEntry?: SessionIndexEntry): Promise<Session | null> {
+export async function parseSessionFile(filePath: string, indexEntry?: SessionIndexEntry, claudeDir?: string): Promise<Session | null> {
   try {
     const content = await readFile(filePath, 'utf-8');
     const entries = parseJSONL(content);
@@ -366,11 +730,71 @@ export async function parseSessionFile(filePath: string, indexEntry?: SessionInd
     const projectDir = dirname(filePath);
     const projectHash = basename(projectDir);
 
+    // Extract first user prompt (excluding /clear)
+    // User messages in JSONL may contain XML system tags (e.g. <command-message>, <system-reminder>)
+    // We extract the human-readable text by:
+    // 1. Text before any XML tag = actual user input
+    // 2. <command-name> tag content = slash command name
+    // 3. Skip entries that are purely system-injected XML
+    // 4. Skip /clear commands regardless of encoding (raw text or XML-wrapped)
+    let firstUserPrompt: string | undefined;
+    for (const entry of entries) {
+      if (entry.type === 'user' && entry.role === 'user' && entry.content) {
+        const content = entry.content.trim();
+        const extracted = extractReadablePrompt(content);
+        if (extracted && !isSkippableCommand(extracted)) {
+          firstUserPrompt = extracted;
+          break;
+        }
+      }
+    }
+
+    // Extract last user prompt (most recent non-/clear user message)
+    let lastUserPrompt: string | undefined;
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i];
+      if (entry.type === 'user' && entry.role === 'user' && entry.content) {
+        const extracted = extractReadablePrompt(entry.content.trim());
+        if (extracted && !isSkippableCommand(extracted)) {
+          lastUserPrompt = extracted;
+          break;
+        }
+      }
+    }
+
+    // Check if first user message is a /clear command
+    let hasClearPrefix = false;
+    for (const entry of entries) {
+      if (entry.type === 'user' && entry.role === 'user' && entry.content) {
+        const extracted = extractReadablePrompt(entry.content.trim());
+        if (extracted) {
+          hasClearPrefix = isSkippableCommand(extracted);
+          break;
+        }
+      }
+    }
+
+    // If there's a real user command after /clear, the session has meaningful content
+    // and shouldn't be marked as a clear-prefix-only session
+    if (hasClearPrefix && firstUserPrompt) {
+      hasClearPrefix = false;
+    }
+
     // Build nodes
     const nodes = buildNodes(entries);
 
-    // Determine state (use null for debugLogMtime; caller may override with actual debug log mtime)
-    const state = determineSessionState(entries, null, metadata.lastTimestamp);
+    // Determine state with debug log checks if claudeDir provided
+    let debugMtime: number | null = null;
+    let closed = false;
+    let idlePrompt = false;
+    let sessionEndTimestamp: number | null = null;
+    if (claudeDir) {
+      debugMtime = await getDebugLogMtime(claudeDir, sessionId);
+      closed = await isSessionClosed(claudeDir, sessionId);
+      idlePrompt = await hasIdlePromptMarker(claudeDir, sessionId);
+      sessionEndTimestamp = await getSessionEndTimestamp(claudeDir, sessionId);
+    }
+    const state = determineSessionState(entries, debugMtime, metadata.lastTimestamp, closed, idlePrompt, sessionEndTimestamp);
 
     // Build session object
     const session: Session = {
@@ -379,6 +803,10 @@ export async function parseSessionFile(filePath: string, indexEntry?: SessionInd
       state,
       summary: indexEntry?.summary || metadata.summary,
       gitBranch: indexEntry?.gitBranch || metadata.gitBranch,
+      cwd: indexEntry?.projectPath || metadata.cwd,
+      firstUserPrompt,
+      lastUserPrompt,
+      hasClearPrefix,
       createdAt: indexEntry?.created ? new Date(indexEntry.created).getTime() : metadata.firstTimestamp,
       lastActivity: metadata.lastTimestamp,
       nodes,
@@ -430,6 +858,7 @@ export async function discoverSubagents(session: Session, sessionJsonlPath: stri
         state,
         summary: metadata.summary,
         gitBranch: session.gitBranch,
+        cwd: session.cwd,
         createdAt: metadata.firstTimestamp,
         lastActivity: metadata.lastTimestamp,
         nodes,
@@ -444,6 +873,17 @@ export async function discoverSubagents(session: Session, sessionJsonlPath: stri
 
   // Sort subagents by creation time
   session.subagents.sort((a, b) => a.createdAt - b.createdAt);
+
+  // Backfill correct agentId from discovered subagents into SubagentNode objects
+  // Match by timestamp proximity (within 1 second)
+  for (const subagent of session.subagents) {
+    const subagentNode = session.nodes.find(
+      (n) => n.type === 'subagent' && Math.abs(n.timestamp - subagent.createdAt) < 1000
+    );
+    if (subagentNode && subagentNode.type === 'subagent') {
+      subagentNode.agentId = subagent.id;
+    }
+  }
 }
 
 /**
@@ -470,7 +910,7 @@ export async function discoverTodaysSessions(claudeDir: string): Promise<Map<str
       const filename = basename(filePath, '.jsonl');
       const indexEntry = indexEntries.get(filename);
 
-      const session = await parseSessionFile(filePath, indexEntry);
+      const session = await parseSessionFile(filePath, indexEntry, claudeDir);
       if (session) {
         // Discover subagents
         await discoverSubagents(session, filePath);
