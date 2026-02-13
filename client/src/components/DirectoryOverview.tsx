@@ -58,7 +58,8 @@ export function DirectoryOverview() {
   const hiddenCwds = useSessionStore((state) => state.hiddenCwds);
   const showActive = useSessionStore((state) => state.showActive);
   const showArchived = useSessionStore((state) => state.showArchived);
-  const expandedGroups = useSessionStore((state) => state.expandedGroups);
+  const expandedDirectories = useSessionStore((state) => state.expandedDirectories);
+  const toggleDirectoryExpansion = useSessionStore((state) => state.toggleDirectoryExpansion);
   const enterSession = useSessionStore((state) => state.enterSession);
 
   // Live ticking for timestamp updates
@@ -77,8 +78,8 @@ export function DirectoryOverview() {
 
   // Compute directory graph layout from session data
   const { nodes: layoutedNodes, edges: layoutedEdges } = useMemo(
-    () => createDirectoryOverviewGraph(sessions, expandedGroups),
-    [sessions, expandedGroups, tickCounter]
+    () => createDirectoryOverviewGraph(sessions, expandedDirectories),
+    [sessions, expandedDirectories, tickCounter]
   );
 
   const [nodes, setNodes, onNodesChange] = useNodesState(layoutedNodes);
@@ -101,18 +102,13 @@ export function DirectoryOverview() {
         }
       }
     } else if (node.type === 'directory') {
-      // Directory nodes show directory metadata
+      // Directory nodes only toggle expand/collapse
       const data = node.data;
-      const directoryInfo = {
-        id: data.cwd || data.label,
-        type: 'directory',
-        label: data.label,
-        sessionCount: data.sessionCount,
-        cwd: data.cwd,
-      };
-      setSelectedNodeData(directoryInfo as any);
+      if (data.cwd) {
+        toggleDirectoryExpansion(data.cwd as string);
+      }
     }
-  }, [allSessions, enterSession, setSelectedNodeData]);
+  }, [allSessions, enterSession, toggleDirectoryExpansion]);
 
   if (sessions.length === 0) {
     return (

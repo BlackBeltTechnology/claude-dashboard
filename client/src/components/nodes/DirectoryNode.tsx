@@ -5,6 +5,7 @@ export interface DirectoryNodeData {
   label: string;
   sessionCount: number;
   cwd: string;
+  isExpanded?: boolean;
   [key: string]: unknown;
 }
 
@@ -38,6 +39,12 @@ const styles = {
     justifyContent: 'center',
     fontSize: '14px',
   },
+  expandIcon: {
+    width: '16px',
+    color: '#93c5fd',
+    fontSize: '11px',
+    textAlign: 'center' as const,
+  },
   title: {
     fontSize: '14px',
     fontWeight: 600,
@@ -52,6 +59,11 @@ const styles = {
     color: '#9ca3af',
     marginTop: '4px',
   },
+  hint: {
+    fontSize: '11px',
+    color: '#6b7280',
+    marginTop: '4px',
+  },
   handle: {
     width: '8px',
     height: '8px',
@@ -61,6 +73,8 @@ const styles = {
 };
 
 function DirectoryNodeComponent({ data, selected }: NodeProps<DirectoryNodeType>) {
+  const expanded = Boolean(data.isExpanded);
+
   return (
     <>
       <Handle
@@ -75,6 +89,7 @@ function DirectoryNodeComponent({ data, selected }: NodeProps<DirectoryNodeType>
         }}
       >
         <div style={styles.header}>
+          <span style={styles.expandIcon}>{expanded ? '▼' : '▶'}</span>
           <div style={styles.icon}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#93c5fd" strokeWidth="2">
               <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
@@ -84,6 +99,9 @@ function DirectoryNodeComponent({ data, selected }: NodeProps<DirectoryNodeType>
         </div>
         <div style={styles.count}>
           {data.sessionCount} {data.sessionCount === 1 ? 'session' : 'sessions'}
+        </div>
+        <div style={styles.hint}>
+          {expanded ? 'Click to collapse' : 'Click to expand'}
         </div>
       </div>
       <Handle

@@ -53,6 +53,9 @@ interface SessionStore {
   // Hidden working directories state
   hiddenCwds: Set<string>;
 
+  // Directory overview expansion state (cwd values)
+  expandedDirectories: Set<string>;
+
   // Session status visibility toggles
   showActive: boolean;
   showArchived: boolean;
@@ -85,6 +88,9 @@ interface SessionStore {
   isSubagentBoxExpanded: (sessionId: string, subagentId: string) => boolean;
   hideSessionsByCwd: (cwd: string) => void;
   unhideAllCwds: () => void;
+  toggleDirectoryExpansion: (cwd: string) => void;
+  expandAllDirectories: () => void;
+  collapseAllDirectories: () => void;
   setShowActive: (show: boolean) => void;
   setShowArchived: (show: boolean) => void;
   toggleNodeTypeVisibility: (nodeType: string) => void;
@@ -238,6 +244,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   expandedSubagents: new Set<string>(),
   expandedSubagentBoxes: new Map<string, Set<string>>(),
   hiddenCwds: new Set<string>(),
+  expandedDirectories: new Set<string>(),
   showActive: true,
   showArchived: true,
   hiddenNodeTypes: new Set<string>(),
@@ -327,6 +334,31 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
 
   unhideAllCwds: () => {
     set({ hiddenCwds: new Set<string>() });
+  },
+
+  toggleDirectoryExpansion: (cwd: string) => {
+    set((state) => {
+      const next = new Set(state.expandedDirectories);
+      if (next.has(cwd)) {
+        next.delete(cwd);
+      } else {
+        next.add(cwd);
+      }
+      return { expandedDirectories: next };
+    });
+  },
+
+  expandAllDirectories: () => {
+    const { sessions } = get();
+    const allCwds = new Set<string>();
+    for (const session of sessions) {
+      allCwds.add(session.cwd || '__no_cwd__');
+    }
+    set({ expandedDirectories: allCwds });
+  },
+
+  collapseAllDirectories: () => {
+    set({ expandedDirectories: new Set<string>() });
   },
 
   setShowActive: (show) => {
@@ -465,20 +497,37 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   },
 
   setSessions: (sessions) => {
-    set({ sessions });
+    set((state) => {
+      let expandedDirectories = state.expandedDirectories;
+
+      // First data load: expand all directories by default for discoverability
+      if (state.sessions.length === 0 && state.expandedDirectories.size === 0 && sessions.length > 0) {
+        expandedDirectories = new Set<string>();
+        for (const session of sessions) {
+          expandedDirectories.add(session.cwd || '__no_cwd__');
+        }
+      }
+
+      return { sessions, expandedDirectories };
+    });
   },
 
   updateSession: (session) => {
     set((state) => {
+      const cwd = session.cwd || '__no_cwd__';
+      const expandedDirectories = new Set(state.expandedDirectories);
+      // Auto-expand brand new directories so newly created sessions are visible
+      expandedDirectories.add(cwd);
+
       const index = state.sessions.findIndex((s) => s.id === session.id);
       if (index === -1) {
         // New session, add to list
-        return { sessions: [...state.sessions, session] };
+        return { sessions: [...state.sessions, session], expandedDirectories };
       }
       // Update existing session
       const newSessions = [...state.sessions];
       newSessions[index] = session;
-      return { sessions: newSessions };
+      return { sessions: newSessions, expandedDirectories };
     });
   },
 

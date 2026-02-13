@@ -33,7 +33,7 @@ const NODE_DIMENSIONS = {
  */
 export function createDirectoryOverviewGraph(
   sessions: Session[],
-  expandedGroups: Set<string>
+  expandedDirectories: Set<string>
 ): DirectoryGraphData {
   const nodes: Node<DirectoryGraphNodeData>[] = [];
   const edges: Edge[] = [];
@@ -76,9 +76,15 @@ export function createDirectoryOverviewGraph(
         label: displayName,
         sessionCount: cwdSessions.length,
         cwd,
+        isExpanded: expandedDirectories.has(cwd),
       },
     };
     nodes.push(directoryNode);
+
+    const isExpanded = expandedDirectories.has(cwd);
+    if (!isExpanded) {
+      continue;
+    }
 
     // Create session nodes for this directory
     for (const session of cwdSessions) {
