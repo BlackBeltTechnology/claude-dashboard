@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import type { AnyNode, Session, SessionState } from 'shared';
+import type { AnyNode, Session, SessionState, ToolGroup, ToolNode as ToolNodeType } from 'shared';
 import { TreeNodeData } from './TreeNode';
+import { ToolDetailFormatter } from '../utils/toolFormatters';
 
 const STATUS_COLORS: Record<SessionState, { bg: string; text: string }> = {
   active: { bg: '#166534', text: '#22c55e' },
-  waiting: { bg: '#854d0e', text: '#eab308' },
+  waiting: { bg: '#854d0e', text: '#fbbf24' },
   idle: { bg: '#374151', text: '#9ca3af' },
   completed: { bg: '#1e40af', text: '#60a5fa' },
 };
@@ -128,6 +129,19 @@ const styles = {
   },
 };
 
+// Helper to format JSON output
+function formatJsonOutput(value: unknown): string {
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return JSON.stringify(parsed, null, 2);
+    } catch {
+      return value;
+    }
+  }
+  return JSON.stringify(value, null, 2);
+}
+
 // Icons for node types
 const NODE_ICONS: Record<string, string> = {
   session: '\u{1F4C1}',
@@ -136,6 +150,9 @@ const NODE_ICONS: Record<string, string> = {
   skill: '\u26A1',
   subagent: '\u{1F500}',
   tool: '\u{1F527}',
+  directory: '\u{1F4C1}',
+  'user-prompt': '\u{1F4AC}',    // Speech bubble
+  'clear-marker': '\u2702',       // Scissors
 };
 
 interface CollapsibleJsonProps {
@@ -173,6 +190,148 @@ function CollapsibleJson({ title, data, defaultExpanded = false }: CollapsibleJs
   );
 }
 
+interface ToolCallsListProps {
+  toolCalls: Array<{ id: string; toolName: string; inputSummary: string; state: string }>;
+  subagentNodes?: AnyNode[];
+}
+
+function ToolCallsList({ toolCalls, subagentNodes }: ToolCallsListProps) {
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  return (
+    <div>
+      {toolCalls.map((tc, index) => {
+        const isExpanded = expandedId === tc.id;
+        const fullNode = subagentNodes?.find(n => n.id === tc.id && n.type === 'tool');
+
+        return (
+          <div key={tc.id} style={{ marginBottom: '4px' }}>
+            <div
+              onClick={() => setExpandedId(isExpanded ? null : tc.id)}
+              style={{
+                padding: '8px 10px',
+                backgroundColor: '#1e293b',
+                borderRadius: isExpanded ? '4px 4px 0 0' : '4px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+              }}
+            >
+              <span style={{ fontSize: '10px', color: '#888' }}>
+                {isExpanded ? '\u25BC' : '\u25B6'}
+              </span>
+              <span style={{ fontSize: '12px', fontWeight: 500, color: '#93c5fd', minWidth: '24px' }}>
+                #{index + 1}
+              </span>
+              <span style={{ fontSize: '12px', fontWeight: 500, color: '#fff' }}>
+                {tc.toolName}
+              </span>
+              <span style={{
+                fontSize: '11px', color: '#6b7280', fontFamily: 'monospace',
+                flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+              }}>
+                {tc.inputSummary}
+              </span>
+            </div>
+            {isExpanded && fullNode && fullNode.type === 'tool' && (
+              <div style={{
+                backgroundColor: '#0f1729',
+                padding: '12px',
+                borderRadius: '0 0 4px 4px',
+                borderTop: '1px solid #1e293b',
+              }}>
+                <ToolDetailFormatter toolNode={fullNode as ToolNodeType} />
+              </div>
+            )}
+            {isExpanded && !fullNode && (
+              <div style={{
+                backgroundColor: '#0f1729', padding: '12px', borderRadius: '0 0 4px 4px',
+                fontSize: '12px', color: '#6b7280'
+              }}>
+                {tc.inputSummary}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+interface ToolGroupCallsListProps {
+  tools: ToolNodeType[];
+}
+
+function ToolGroupCallsList({ tools }: ToolGroupCallsListProps) {
+  const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
+
+  return (
+    <div>
+      {tools.map((tool, index) => {
+        const isExpanded = expandedIndex === index;
+        // Generate preview text
+        let preview = '';
+        if (tool.toolName === 'Bash' && tool.input.command) {
+          const cmd = String(tool.input.command);
+          preview = cmd.length > 50 ? cmd.substring(0, 50) + '...' : cmd;
+        } else if ((tool.toolName === 'Read' || tool.toolName === 'Write') && tool.input.file_path) {
+          const path = String(tool.input.file_path);
+          preview = path.length > 50 ? '...' + path.substring(path.length - 47) : path;
+        } else if ((tool.toolName === 'Grep' || tool.toolName === 'Glob') && tool.input.pattern) {
+          preview = String(tool.input.pattern).substring(0, 50);
+        }
+
+        return (
+          <div key={tool.id} style={{ marginBottom: '4px' }}>
+            <div
+              onClick={() => setExpandedIndex(isExpanded ? null : index)}
+              style={{
+                padding: '8px 10px',
+                backgroundColor: '#1e293b',
+                borderRadius: isExpanded ? '4px 4px 0 0' : '4px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+              }}
+            >
+              <span style={{ fontSize: '10px', color: '#888' }}>
+                {isExpanded ? '\u25BC' : '\u25B6'}
+              </span>
+              <span style={{ fontSize: '12px', fontWeight: 500, color: '#93c5fd', minWidth: '24px' }}>
+                #{index + 1}
+              </span>
+              <span style={{ fontSize: '12px', fontWeight: 500, color: '#fff' }}>
+                {tool.toolName}
+              </span>
+              {preview && (
+                <span style={{
+                  fontSize: '11px', color: '#6b7280', fontFamily: 'monospace',
+                  flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+                }}>
+                  {preview}
+                </span>
+              )}
+              <span style={{ fontSize: '11px', color: '#6b7280' }}>
+                {new Date(tool.timestamp).toLocaleTimeString()}
+              </span>
+            </div>
+            {isExpanded && (
+              <div style={{
+                backgroundColor: '#0f1729', padding: '12px', borderRadius: '0 0 4px 4px',
+                borderTop: '1px solid #1e293b'
+              }}>
+                <ToolDetailFormatter toolNode={tool} />
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 interface NodeDetailProps {
   node: TreeNodeData | null;
 }
@@ -197,9 +356,15 @@ function getNodeTitle(node: TreeNodeData): string {
       case 'skill':
         return `Skill: ${node.skillName}`;
       case 'subagent':
-        return `Subagent: ${node.agentType}`;
+        return node.agentName || `Subagent: ${node.agentType}`;
       case 'tool':
         return `Tool: ${node.toolName}`;
+      case 'tool-group':
+        return `${node.toolName} (${node.count})`;
+      case 'user-prompt':
+        return node.isCommand ? `Command: ${node.commandName || 'unknown'}` : 'User Prompt';
+      case 'clear-marker':
+        return `/clear #${node.clearIndex + 1}`;
       default:
         return 'Node';
     }
@@ -215,6 +380,7 @@ function getNodeType(node: TreeNodeData): string {
 }
 
 export function NodeDetail({ node }: NodeDetailProps) {
+  console.log('NodeDetail render:', node);
   if (!node) {
     return (
       <div style={styles.container}>
@@ -228,7 +394,13 @@ export function NodeDetail({ node }: NodeDetailProps) {
   const icon = getNodeIcon(node);
   const title = getNodeTitle(node);
   const nodeType = getNodeType(node);
-  const badgeColors = STATUS_COLORS[node.state] || STATUS_COLORS.idle;
+  const getBadgeColors = () => {
+    if ('state' in node && node.state in STATUS_COLORS) {
+      return STATUS_COLORS[node.state];
+    }
+    return STATUS_COLORS.active;
+  };
+  const badgeColors = getBadgeColors();
 
   return (
     <div style={styles.container}>
@@ -237,20 +409,23 @@ export function NodeDetail({ node }: NodeDetailProps) {
         <div style={styles.titleRow}>
           <span style={styles.typeIcon}>{icon}</span>
           <span style={styles.title}>{title}</span>
-          <span
-            style={{
-              ...styles.stateBadge,
-              backgroundColor: badgeColors.bg,
-              color: badgeColors.text,
-            }}
-          >
-            {node.state}
-          </span>
+          {'state' in node && (
+            <span
+              style={{
+                ...styles.stateBadge,
+                backgroundColor: badgeColors.bg,
+                color: badgeColors.text,
+              }}
+            >
+              {node.state}
+            </span>
+          )}
         </div>
         <div style={styles.metaRow}>
           Type: {nodeType}
           {' | '}
           ID: {'id' in node ? node.id : 'N/A'}
+          {'state' in node ? ` | State: ${node.state}` : ''}
         </div>
       </div>
 
@@ -260,26 +435,113 @@ export function NodeDetail({ node }: NodeDetailProps) {
   );
 }
 
+function renderGroupedModelOutputContent(data: { nodeData: any[]; count: number }): React.ReactNode {
+  return (
+    <>
+      <div style={styles.section}>
+        <div style={styles.sectionTitle}>Model Outputs ({data.count})</div>
+        {data.nodeData.map((msg: any, i: number) => (
+          <ModelOutputEntry key={i} msg={msg} index={i} />
+        ))}
+      </div>
+    </>
+  );
+}
+
+function ModelOutputEntry({ msg, index }: { msg: any; index: number }) {
+  const [expanded, setExpanded] = useState(false);
+  const content = msg.content || '(empty)';
+  const preview = content.length > 120 ? content.slice(0, 120) + '...' : content;
+
+  return (
+    <div
+      style={{
+        marginBottom: '8px',
+        background: '#1a1a2e',
+        borderRadius: '6px',
+        border: '1px solid #333',
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        onClick={() => setExpanded(!expanded)}
+        style={{
+          padding: '8px 12px',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          fontSize: '12px',
+          color: '#c4b5fd',
+        }}
+      >
+        <span style={{ fontSize: '10px' }}>{expanded ? '\u25BC' : '\u25B6'}</span>
+        <span style={{ fontWeight: 600 }}>Response {index + 1}</span>
+        {msg.timestamp && (
+          <span style={{ marginLeft: 'auto', color: '#666', fontSize: '11px' }}>
+            {new Date(msg.timestamp).toLocaleTimeString()}
+          </span>
+        )}
+      </div>
+      {expanded ? (
+        <div style={{ padding: '8px 12px', borderTop: '1px solid #333', color: '#ccc', fontSize: '12px', whiteSpace: 'pre-wrap', maxHeight: '400px', overflowY: 'auto' }}>
+          {content}
+        </div>
+      ) : (
+        <div style={{ padding: '4px 12px 8px', color: '#888', fontSize: '11px' }}>
+          {preview}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function renderNodeContent(node: TreeNodeData): React.ReactNode {
-  // Check if it's a Session (no 'type' property at the top level)
-  if (!('type' in node)) {
+  // Check for grouped model output data (has nodeData array + count, no type)
+  if ('nodeData' in (node as any) && 'count' in (node as any) && Array.isArray((node as any).nodeData)) {
+    return renderGroupedModelOutputContent(node as any);
+  }
+
+  // Check if it's a Session (has sessionId but no 'type')
+  if (!('type' in node) && 'sessionId' in node) {
     return renderSessionContent(node);
   }
 
-  // It's an AnyNode
-  switch (node.type) {
-    case 'session':
-      return renderSessionNodeContent(node);
-    case 'message':
-      return renderMessageContent(node);
-    case 'skill':
-      return renderSkillContent(node);
-    case 'subagent':
-      return renderSubagentContent(node);
-    case 'tool':
-      return renderToolContent(node);
-    default:
-      return <p style={{ color: '#888' }}>Unknown node type</p>;
+  // Fallback for unknown non-typed objects
+  if (!('type' in node)) {
+    return <p style={{ color: '#888' }}>Unknown node data</p>;
+  }
+
+  // Handle different node types
+  if ('type' in node) {
+    const nodeType = node.type;
+    switch (nodeType) {
+      case 'session':
+        return renderSessionNodeContent(node);
+      case 'message':
+        return renderMessageContent(node);
+      case 'skill':
+        return renderSkillContent(node);
+      case 'subagent':
+        return renderSubagentContent(node);
+      case 'tool':
+        return renderToolContent(node);
+      case 'tool-group':
+        return renderToolGroupContent(node);
+      case 'directory':
+        return renderDirectoryContent(node);
+      case 'user-prompt':
+        return renderUserPromptContent(node);
+      case 'clear-marker':
+        return renderClearMarkerContent(node);
+      default:
+        return <p style={{ color: '#888' }}>Unknown node type</p>;
+    }
+  } else if ('sessionId' in node) {
+    // It's a Session
+    return renderSessionContent(node);
+  } else {
+    return <p style={{ color: '#888' }}>Unknown node type</p>;
   }
 }
 
@@ -378,21 +640,123 @@ function renderSessionNodeContent(node: AnyNode & { type: 'session' }): React.Re
   );
 }
 
-function renderMessageContent(node: AnyNode & { type: 'message' }): React.ReactNode {
+interface ModelOutputGroupListProps {
+  messages: Array<AnyNode & { type: 'message'; role: 'assistant' }>;
+}
+
+function ModelOutputGroupList({ messages }: ModelOutputGroupListProps) {
+  const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
+
+  return (
+    <div>
+      {messages.map((msg, index) => {
+        const isExpanded = expandedIndex === index;
+        const preview = msg.content ? (msg.content.length > 100 ? msg.content.slice(0, 100) + '...' : msg.content) : '(empty)';
+
+        return (
+          <div key={msg.id} style={{ marginBottom: '4px' }}>
+            <div
+              onClick={() => setExpandedIndex(isExpanded ? null : index)}
+              style={{
+                padding: '8px 10px',
+                backgroundColor: '#1e293b',
+                borderRadius: isExpanded ? '4px 4px 0 0' : '4px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+              }}
+            >
+              <span style={{ fontSize: '10px', color: '#888' }}>
+                {isExpanded ? '\u25BC' : '\u25B6'}
+              </span>
+              <span style={{ fontSize: '12px', fontWeight: 500, color: '#93c5fd', minWidth: '24px' }}>
+                #{index + 1}
+              </span>
+              <span style={{
+                fontSize: '11px', color: '#9ca3af', fontFamily: 'monospace',
+                flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+              }}>
+                {preview}
+              </span>
+              <span style={{ fontSize: '11px', color: '#6b7280' }}>
+                {new Date(msg.timestamp).toLocaleTimeString()}
+              </span>
+            </div>
+            {isExpanded && (
+              <div style={{
+                backgroundColor: '#0f1729', padding: '12px', borderRadius: '0 0 4px 4px',
+                borderTop: '1px solid #1e293b'
+              }}>
+                <div style={{
+                  fontSize: '13px',
+                  lineHeight: 1.5,
+                  color: '#eee',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                }}>
+                  {msg.content || '(empty)'}
+                </div>
+                {msg.toolUses && msg.toolUses.length > 0 && (
+                  <div style={{ marginTop: '12px' }}>
+                    <div style={{ fontSize: '11px', color: '#888', marginBottom: '6px' }}>
+                      Tool Uses ({msg.toolUses.length})
+                    </div>
+                    {msg.toolUses.map((toolUse) => (
+                      <div key={toolUse.id} style={{ marginBottom: '8px' }}>
+                        <CollapsibleJson
+                          title={`${toolUse.name} (${toolUse.id.slice(0, 8)}...)`}
+                          data={toolUse.input}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function renderMessageContent(node: AnyNode & { type: 'message' } | { nodeData: AnyNode[] }): React.ReactNode {
+  // Check if this is a grouped model output (array of messages)
+  if ('nodeData' in node && Array.isArray(node.nodeData)) {
+    const messages = node.nodeData.filter(
+      (n): n is AnyNode & { type: 'message'; role: 'assistant' } =>
+        n.type === 'message' && n.role === 'assistant'
+    );
+
+    if (messages.length > 0) {
+      return (
+        <div style={styles.section}>
+          <div style={styles.sectionTitle}>Model Outputs ({messages.length})</div>
+          <ModelOutputGroupList messages={messages} />
+        </div>
+      );
+    }
+  }
+
+  // Single message node
+  const messageNode = 'nodeData' in node ? null : node;
+  if (!messageNode) return null;
+
   return (
     <>
       <div style={styles.section}>
         <div style={styles.sectionTitle}>Message Content</div>
-        <div style={styles.content}>{node.content || '(empty message)'}</div>
+        <div style={styles.content}>{messageNode.content || '(empty message)'}</div>
       </div>
 
-      {node.toolUses && node.toolUses.length > 0 && (
+      {messageNode.toolUses && messageNode.toolUses.length > 0 && (
         <div style={styles.section}>
           <div style={styles.sectionTitle}>
-            Tool Uses ({node.toolUses.length})
+            Tool Uses ({messageNode.toolUses.length})
           </div>
-          {node.toolUses.map((toolUse, index) => (
-            <div key={toolUse.id} style={{ marginBottom: index < node.toolUses!.length - 1 ? '12px' : 0 }}>
+          {messageNode.toolUses.map((toolUse, index) => (
+            <div key={toolUse.id} style={{ marginBottom: index < messageNode.toolUses!.length - 1 ? '12px' : 0 }}>
               <CollapsibleJson
                 title={`${toolUse.name} (${toolUse.id.slice(0, 8)}...)`}
                 data={toolUse.input}
@@ -406,17 +770,44 @@ function renderMessageContent(node: AnyNode & { type: 'message' }): React.ReactN
         <div style={styles.sectionTitle}>Metadata</div>
         <div style={styles.infoGrid}>
           <span style={styles.infoLabel}>Role:</span>
-          <span style={styles.infoValue}>{node.role}</span>
+          <span style={styles.infoValue}>{messageNode.role}</span>
 
           <span style={styles.infoLabel}>Node ID:</span>
-          <span style={styles.infoValue}>{node.id}</span>
+          <span style={styles.infoValue}>{messageNode.id}</span>
 
           <span style={styles.infoLabel}>Timestamp:</span>
           <span style={styles.infoValue}>
-            {new Date(node.timestamp).toLocaleString()}
+            {new Date(messageNode.timestamp).toLocaleString()}
           </span>
         </div>
       </div>
+
+      {(messageNode as any).hooks && (messageNode as any).hooks.length > 0 && (
+        <div style={styles.section}>
+          <div style={styles.sectionTitle}>Hooks ({(messageNode as any).hooks.length})</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {(messageNode as any).hooks.sort((a: any, b: any) => a.timestamp - b.timestamp).map((hook: any, index: number) => (
+              <div key={index} style={{ padding: '10px', backgroundColor: '#16213e', borderRadius: '6px' }}>
+                <div style={styles.infoGrid}>
+                  <span style={styles.infoLabel}>Event:</span>
+                  <span style={styles.infoValue}>{hook.event}</span>
+
+                  <span style={styles.infoLabel}>Hook Name:</span>
+                  <span style={styles.infoValue}>{hook.hookName}</span>
+
+                  <span style={styles.infoLabel}>Command:</span>
+                  <span style={{ ...styles.infoValue, fontFamily: 'monospace', fontSize: '11px', fontStyle: hook.command === 'callback' ? 'italic' : 'normal' }}>
+                    {hook.command}
+                  </span>
+
+                  <span style={styles.infoLabel}>Time:</span>
+                  <span style={styles.infoValue}>{new Date(hook.timestamp).toLocaleTimeString()}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -446,24 +837,89 @@ function renderSkillContent(node: AnyNode & { type: 'skill' }): React.ReactNode 
           <div style={styles.content}>{node.args}</div>
         </div>
       )}
+
+      {node.hooks && node.hooks.length > 0 && (
+        <div style={styles.section}>
+          <div style={styles.sectionTitle}>Hooks ({node.hooks.length})</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {node.hooks.sort((a, b) => a.timestamp - b.timestamp).map((hook, index) => (
+              <div key={index} style={{ padding: '10px', backgroundColor: '#16213e', borderRadius: '6px' }}>
+                <div style={styles.infoGrid}>
+                  <span style={styles.infoLabel}>Event:</span>
+                  <span style={styles.infoValue}>{hook.event}</span>
+
+                  <span style={styles.infoLabel}>Hook Name:</span>
+                  <span style={styles.infoValue}>{hook.hookName}</span>
+
+                  <span style={styles.infoLabel}>Command:</span>
+                  <span style={{ ...styles.infoValue, fontFamily: 'monospace', fontSize: '11px', fontStyle: hook.command === 'callback' ? 'italic' : 'normal' }}>
+                    {hook.command}
+                  </span>
+
+                  <span style={styles.infoLabel}>Time:</span>
+                  <span style={styles.infoValue}>{new Date(hook.timestamp).toLocaleTimeString()}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </>
+  );
+}
+
+function ExpandableSection({ title, content }: { title: string; content: string }) {
+  const [expanded, setExpanded] = React.useState(false);
+  return (
+    <div style={styles.section}>
+      <div style={{ ...styles.sectionTitle, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span>{title}</span>
+        <span
+          onClick={() => setExpanded(!expanded)}
+          style={{ cursor: 'pointer', fontSize: '11px', color: '#e94560', fontWeight: 400, textTransform: 'none' as const }}
+        >
+          {expanded ? 'Show less' : 'Show all'}
+        </span>
+      </div>
+      <div style={{
+        ...styles.content,
+        maxHeight: expanded ? 'none' : '500px',
+        fontSize: '14px',
+      }}>{content}</div>
+    </div>
   );
 }
 
 function renderSubagentContent(node: AnyNode & { type: 'subagent' }): React.ReactNode {
   return (
     <>
-      <div style={styles.section}>
-        <div style={styles.sectionTitle}>Subagent Info</div>
-        <div style={styles.infoGrid}>
-          <span style={styles.infoLabel}>Agent ID:</span>
-          <span style={styles.infoValue}>{node.agentId}</span>
+      {node.prompt && (
+        <ExpandableSection title="Request" content={node.prompt} />
+      )}
 
+      {(node as any).summary && (
+        <ExpandableSection title="Response" content={(node as any).summary} />
+      )}
+
+      <div style={styles.section}>
+        <div style={styles.sectionTitle}>Agent Info</div>
+        <div style={styles.infoGrid}>
           <span style={styles.infoLabel}>Agent Type:</span>
           <span style={styles.infoValue}>{node.agentType}</span>
 
-          <span style={styles.infoLabel}>Node ID:</span>
-          <span style={styles.infoValue}>{node.id}</span>
+          {node.agentName && (
+            <>
+              <span style={styles.infoLabel}>Agent Name:</span>
+              <span style={styles.infoValue}>{node.agentName}</span>
+            </>
+          )}
+
+          {node.model && (
+            <>
+              <span style={styles.infoLabel}>Model:</span>
+              <span style={styles.infoValue}>{node.model}</span>
+            </>
+          )}
 
           <span style={styles.infoLabel}>Timestamp:</span>
           <span style={styles.infoValue}>
@@ -476,6 +932,40 @@ function renderSubagentContent(node: AnyNode & { type: 'subagent' }): React.Reac
         <div style={styles.section}>
           <div style={styles.sectionTitle}>Description</div>
           <div style={styles.content}>{node.description}</div>
+        </div>
+      )}
+
+      {node.sourceFilePath && (
+        <div style={styles.section}>
+          <div style={styles.sectionTitle}>Source File</div>
+          <div style={styles.content}>{node.sourceFilePath}</div>
+        </div>
+      )}
+
+      {node.hooks && node.hooks.length > 0 && (
+        <div style={styles.section}>
+          <div style={styles.sectionTitle}>Hooks ({node.hooks.length})</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {node.hooks.sort((a, b) => a.timestamp - b.timestamp).map((hook, index) => (
+              <div key={index} style={{ padding: '10px', backgroundColor: '#16213e', borderRadius: '6px' }}>
+                <div style={styles.infoGrid}>
+                  <span style={styles.infoLabel}>Event:</span>
+                  <span style={styles.infoValue}>{hook.event}</span>
+
+                  <span style={styles.infoLabel}>Hook Name:</span>
+                  <span style={styles.infoValue}>{hook.hookName}</span>
+
+                  <span style={styles.infoLabel}>Command:</span>
+                  <span style={{ ...styles.infoValue, fontFamily: 'monospace', fontSize: '11px', fontStyle: hook.command === 'callback' ? 'italic' : 'normal' }}>
+                    {hook.command}
+                  </span>
+
+                  <span style={styles.infoLabel}>Time:</span>
+                  <span style={styles.infoValue}>{new Date(hook.timestamp).toLocaleTimeString()}</span>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </>
@@ -509,9 +999,186 @@ function renderToolContent(node: AnyNode & { type: 'tool' }): React.ReactNode {
       {node.output && (
         <div style={styles.section}>
           <div style={styles.sectionTitle}>Output</div>
-          <div style={styles.content}>{node.output}</div>
+          <pre style={styles.jsonContent}>{formatJsonOutput(node.output)}</pre>
         </div>
       )}
+
+      {node.hooks && node.hooks.length > 0 && (
+        <div style={styles.section}>
+          <div style={styles.sectionTitle}>Hooks ({node.hooks.length})</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {node.hooks.sort((a, b) => a.timestamp - b.timestamp).map((hook, index) => (
+              <div key={index} style={{ padding: '10px', backgroundColor: '#16213e', borderRadius: '6px' }}>
+                <div style={styles.infoGrid}>
+                  <span style={styles.infoLabel}>Event:</span>
+                  <span style={styles.infoValue}>{hook.event}</span>
+
+                  <span style={styles.infoLabel}>Hook Name:</span>
+                  <span style={styles.infoValue}>{hook.hookName}</span>
+
+                  <span style={styles.infoLabel}>Command:</span>
+                  <span style={{ ...styles.infoValue, fontFamily: 'monospace', fontSize: '11px', fontStyle: hook.command === 'callback' ? 'italic' : 'normal' }}>
+                    {hook.command}
+                  </span>
+
+                  <span style={styles.infoLabel}>Time:</span>
+                  <span style={styles.infoValue}>{new Date(hook.timestamp).toLocaleTimeString()}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function renderToolGroupContent(node: ToolGroup): React.ReactNode {
+  return (
+    <>
+      <div style={styles.section}>
+        <div style={styles.sectionTitle}>Tool Group Info</div>
+        <div style={styles.infoGrid}>
+          <span style={styles.infoLabel}>Tool Name:</span>
+          <span style={styles.infoValue}>{node.toolName}</span>
+
+          <span style={styles.infoLabel}>Count:</span>
+          <span style={styles.infoValue}>{node.count}</span>
+
+          <span style={styles.infoLabel}>Group ID:</span>
+          <span style={styles.infoValue}>{node.id}</span>
+
+          <span style={styles.infoLabel}>State:</span>
+          <span style={styles.infoValue}>{node.state}</span>
+
+          <span style={styles.infoLabel}>Timestamp:</span>
+          <span style={styles.infoValue}>
+            {new Date(node.timestamp).toLocaleString()}
+          </span>
+        </div>
+      </div>
+
+      {node.count > 0 && (
+        <div style={styles.section}>
+          <div style={styles.sectionTitle}>Tool Calls ({node.count})</div>
+          <ToolGroupCallsList tools={node.nodes} />
+        </div>
+      )}
+    </>
+  );
+}
+
+function renderDirectoryContent(node: any): React.ReactNode {
+  return (
+    <>
+      <div style={styles.section}>
+        <div style={styles.sectionTitle}>Directory Info</div>
+        <div style={styles.infoGrid}>
+          <span style={styles.infoLabel}>Directory:</span>
+          <span style={styles.infoValue}>{node.label}</span>
+
+          <span style={styles.infoLabel}>Working Directory:</span>
+          <span style={styles.infoValue}>{node.cwd}</span>
+
+          <span style={styles.infoLabel}>Session Count:</span>
+          <span style={styles.infoValue}>{node.sessionCount}</span>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function renderUserPromptContent(node: AnyNode & { type: 'user-prompt' }): React.ReactNode {
+  return (
+    <>
+      <div style={styles.section}>
+        <div style={styles.sectionTitle}>User Prompt</div>
+        <div style={styles.content}>{node.promptText}</div>
+      </div>
+
+      {node.isCommand && node.commandName && (
+        <div style={styles.section}>
+          <div style={styles.sectionTitle}>Command</div>
+          <div style={styles.infoGrid}>
+            <span style={styles.infoLabel}>Command:</span>
+            <span style={styles.infoValue}>{node.commandName}</span>
+          </div>
+        </div>
+      )}
+
+      {node.commandMetadata && (
+        <div style={styles.section}>
+          <div style={styles.sectionTitle}>Command Metadata (XML)</div>
+          <pre style={{
+            ...styles.jsonContent,
+            borderRadius: '6px',
+            fontSize: '11px',
+          }}>{node.commandMetadata}</pre>
+        </div>
+      )}
+
+      {node.hooks && node.hooks.length > 0 && (
+        <div style={styles.section}>
+          <div style={styles.sectionTitle}>Hooks ({node.hooks.length})</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {node.hooks.sort((a, b) => a.timestamp - b.timestamp).map((hook, index) => (
+              <div key={index} style={{ padding: '10px', backgroundColor: '#16213e', borderRadius: '6px' }}>
+                <div style={styles.infoGrid}>
+                  <span style={styles.infoLabel}>Event:</span>
+                  <span style={styles.infoValue}>{hook.event}</span>
+
+                  <span style={styles.infoLabel}>Hook Name:</span>
+                  <span style={styles.infoValue}>{hook.hookName}</span>
+
+                  <span style={styles.infoLabel}>Command:</span>
+                  <span style={{ ...styles.infoValue, fontFamily: 'monospace', fontSize: '11px', fontStyle: hook.command === 'callback' ? 'italic' : 'normal' }}>
+                    {hook.command}
+                  </span>
+
+                  <span style={styles.infoLabel}>Time:</span>
+                  <span style={styles.infoValue}>{new Date(hook.timestamp).toLocaleTimeString()}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div style={styles.section}>
+        <div style={styles.sectionTitle}>Metadata</div>
+        <div style={styles.infoGrid}>
+          <span style={styles.infoLabel}>Node ID:</span>
+          <span style={styles.infoValue}>{node.id}</span>
+          <span style={styles.infoLabel}>Timestamp:</span>
+          <span style={styles.infoValue}>{new Date(node.timestamp).toLocaleString()}</span>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function renderClearMarkerContent(node: AnyNode & { type: 'clear-marker' }): React.ReactNode {
+  return (
+    <>
+      <div style={styles.section}>
+        <div style={styles.sectionTitle}>Context Reset</div>
+        <div style={styles.content}>
+          This /clear command reset the conversation context.
+          All messages before this point were cleared from Claude's context window.
+        </div>
+      </div>
+
+      <div style={styles.section}>
+        <div style={styles.sectionTitle}>Metadata</div>
+        <div style={styles.infoGrid}>
+          <span style={styles.infoLabel}>Clear Index:</span>
+          <span style={styles.infoValue}>#{node.clearIndex + 1}</span>
+          <span style={styles.infoLabel}>Node ID:</span>
+          <span style={styles.infoValue}>{node.id}</span>
+          <span style={styles.infoLabel}>Timestamp:</span>
+          <span style={styles.infoValue}>{new Date(node.timestamp).toLocaleString()}</span>
+        </div>
+      </div>
     </>
   );
 }

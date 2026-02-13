@@ -1,9 +1,12 @@
 import React from 'react';
+import { Toolbar } from './Toolbar';
+import { TreePanel } from './TreePanel';
+import { useSessionStore } from '../store/sessionStore';
 
 interface LayoutProps {
-  sidebar: React.ReactNode;
   children: React.ReactNode;
-  headerActions?: React.ReactNode;
+  connected: boolean;
+  onOpenSettings: () => void;
 }
 
 const styles = {
@@ -16,52 +19,40 @@ const styles = {
     color: '#eee',
   },
   header: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '12px 20px',
-    backgroundColor: '#16213e',
-    borderBottom: '1px solid #0f3460',
-  },
-  title: {
-    margin: 0,
-    fontSize: '18px',
-    fontWeight: 600,
-    color: '#e94560',
+    flexShrink: 0,
   },
   main: {
     display: 'flex',
     flex: 1,
     overflow: 'hidden',
   },
-  sidebar: {
-    width: '250px',
-    minWidth: '250px',
-    backgroundColor: '#16213e',
-    borderRight: '1px solid #0f3460',
-    overflowY: 'auto' as const,
+  contentWrapper: {
+    position: 'relative' as const,
+    flex: 1,
+    overflow: 'hidden',
   },
   content: {
-    flex: 1,
-    overflow: 'auto',
-    padding: '20px',
+    width: '100%',
+    height: '100%',
   },
 };
 
-export function Layout({ sidebar, children, headerActions }: LayoutProps) {
+export function Layout({ children, connected, onOpenSettings }: LayoutProps) {
+  const navigationView = useSessionStore((state) => state.navigationView);
+  const treePanelOpen = useSessionStore((state) => state.treePanelOpen);
+
   return (
     <div style={styles.container}>
       <header style={styles.header}>
-        <h1 style={styles.title}>Claude Session Dashboard</h1>
-        {headerActions && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            {headerActions}
-          </div>
-        )}
+        <Toolbar connected={connected} onOpenSettings={onOpenSettings} />
       </header>
       <main style={styles.main}>
-        <aside style={styles.sidebar}>{sidebar}</aside>
-        <div style={styles.content}>{children}</div>
+        <div style={styles.contentWrapper}>
+          {navigationView === 'session-timeline' && (
+            <TreePanel isOpen={treePanelOpen} />
+          )}
+          <div style={styles.content}>{children}</div>
+        </div>
       </main>
     </div>
   );

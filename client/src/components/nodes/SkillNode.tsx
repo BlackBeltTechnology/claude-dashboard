@@ -7,15 +7,17 @@ export interface SkillNodeData {
   state: SessionState;
   skillName: string;
   args?: string;
+  hooks?: Array<{ event: string; hookName: string; command: string; timestamp: number }>;
   [key: string]: unknown;
 }
 
 export type SkillNodeType = Node<SkillNodeData, 'skill'>;
 
+const DEFAULT_STATUS_COLORS = { bg: '#374151', border: '#6b7280', dot: '#9ca3af' };
 const STATUS_COLORS: Record<SessionState, { bg: string; border: string; dot: string }> = {
   active: { bg: '#052e16', border: '#16a34a', dot: '#22c55e' },
-  waiting: { bg: '#422006', border: '#ca8a04', dot: '#eab308' },
-  idle: { bg: '#1f2937', border: '#4b5563', dot: '#6b7280' },
+  waiting: { bg: '#422006', border: '#ca8a04', dot: '#fbbf24' },
+  idle: { bg: '#1f2937', border: '#4b5563', dot: '#9ca3af' },
   completed: { bg: '#1e3a5f', border: '#2563eb', dot: '#3b82f6' },
 };
 
@@ -79,16 +81,23 @@ const styles = {
     background: '#06b6d4',
     border: '1px solid #1a1a2e',
   },
+  hookBadge: {
+    fontSize: '9px',
+    backgroundColor: '#374151',
+    color: '#9ca3af',
+    padding: '1px 4px',
+    borderRadius: '3px',
+  },
 };
 
 function SkillNodeComponent({ data, selected }: NodeProps<SkillNodeType>) {
-  const colors = STATUS_COLORS[data.state];
+  const colors = STATUS_COLORS[data.state] ?? DEFAULT_STATUS_COLORS;
 
   return (
     <>
       <Handle
         type="target"
-        position={Position.Top}
+        position={Position.Left}
         style={styles.handle}
       />
       <div
@@ -116,6 +125,9 @@ function SkillNodeComponent({ data, selected }: NodeProps<SkillNodeType>) {
         </div>
         <div style={styles.skillName}>
           Skill: {data.skillName}
+          {data.hooks && data.hooks.length > 0 && (
+            <span style={{ ...styles.hookBadge, marginLeft: '6px' }}>🪝 {data.hooks.length}</span>
+          )}
         </div>
         {data.args && (
           <div style={styles.args} title={data.args}>
@@ -125,7 +137,7 @@ function SkillNodeComponent({ data, selected }: NodeProps<SkillNodeType>) {
       </div>
       <Handle
         type="source"
-        position={Position.Bottom}
+        position={Position.Right}
         style={styles.handle}
       />
     </>

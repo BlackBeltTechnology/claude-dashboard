@@ -4,7 +4,6 @@ import { createServer } from 'http';
 import { WebSocketManager } from './websocket.js';
 import { createApiRouter } from './api.js';
 import { SessionManager } from './watcher.js';
-import { NotificationManager } from './notifications.js';
 
 const PORT = parseInt(process.env.CLAUDE_DASHBOARD_PORT || '3847', 10);
 const CLAUDE_DIR = process.env.HOME + '/.claude';
@@ -15,10 +14,6 @@ app.use(express.json());
 
 // Initialize SessionManager for file watching
 const sessionManager = new SessionManager(CLAUDE_DIR);
-
-// Initialize NotificationManager and wire to SessionManager
-const notificationManager = new NotificationManager();
-notificationManager.attach(sessionManager);
 
 // Health check
 app.get('/api/health', (_req, res) => {
@@ -45,8 +40,8 @@ sessionManager.on('subagent-update', (parentSessionId, agentId, subagent) => {
   wsManager.broadcastSubagentUpdate(parentSessionId, agentId, subagent);
 });
 
-sessionManager.on('state-change', (sessionId, agentId, previousState, newState) => {
-  wsManager.broadcastStateChange(sessionId, previousState, newState, agentId);
+sessionManager.on('state-change', (sessionId, agentId, previousState, newState, cwd, lastUserPrompt) => {
+  wsManager.broadcastStateChange(sessionId, previousState, newState, agentId, cwd, lastUserPrompt);
 });
 
 sessionManager.on('error', (error) => {
@@ -73,33 +68,8 @@ app.post('/api/sessions/refresh', async (_req, res) => {
   }
 });
 
-// GET notification preferences
-app.get('/api/notifications/preferences', (_req, res) => {
-  res.json(notificationManager.getPreferences());
-});
-
-// PUT notification preferences
-app.put('/api/notifications/preferences', (req, res) => {
-  const { desktop, browser } = req.body as { desktop?: unknown; browser?: unknown };
-
-  // Validate that at least one valid boolean field is present
-  if (
-    (desktop !== undefined && typeof desktop !== 'boolean') ||
-    (browser !== undefined && typeof browser !== 'boolean')
-  ) {
-    res.status(400).json({ error: 'INVALID_REQUEST', message: 'desktop and browser must be booleans' });
-    return;
-  }
-
-  const updated = notificationManager.setPreferences({
-    desktop: typeof desktop === 'boolean' ? desktop : undefined,
-    browser: typeof browser === 'boolean' ? browser : undefined,
-  });
-  res.json(updated);
-});
-
 // Export sessionManager for use by other modules
-export { wsManager, sessionManager, notificationManager };
+export { wsManager, sessionManager };
 
 // Start the server and session manager
 async function start() {
@@ -122,7 +92,6 @@ async function start() {
 // Handle graceful shutdown
 process.on('SIGINT', async () => {
   console.log('\n[Server] Shutting down...');
-  notificationManager.detach();
   await sessionManager.stop();
   server.close();
   process.exit(0);
@@ -130,7 +99,6 @@ process.on('SIGINT', async () => {
 
 process.on('SIGTERM', async () => {
   console.log('\n[Server] Shutting down...');
-  notificationManager.detach();
   await sessionManager.stop();
   server.close();
   process.exit(0);

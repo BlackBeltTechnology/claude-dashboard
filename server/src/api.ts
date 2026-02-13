@@ -51,7 +51,7 @@ async function parseJSONL(filePath: string): Promise<unknown[]> {
 
 // Determine session state from transcript entries
 function determineSessionState(entries: unknown[]): SessionState {
-  if (entries.length === 0) return 'idle';
+  if (entries.length === 0) return 'waiting';
 
   const lastEntry = entries[entries.length - 1] as Record<string, unknown>;
   const type = lastEntry?.type;
@@ -79,7 +79,7 @@ function determineSessionState(entries: unknown[]): SessionState {
     return 'active';
   }
 
-  return 'idle';
+  return 'waiting';
 }
 
 // Extract summary from session entries (first user message)
@@ -176,6 +176,9 @@ function parseTranscriptToNodes(entries: unknown[], sessionId: string): AnyNode[
         lastMessageId = uuid;
       }
 
+      // Extract API message ID for parallel detection
+      const messageId = (message?.id as string) || undefined;
+
       // Add tool nodes for each tool use
       for (const tu of toolUses) {
         // Check for special tool types
@@ -187,8 +190,11 @@ function parseTranscriptToNodes(entries: unknown[], sessionId: string): AnyNode[
             state: 'active',
             timestamp: ts,
             agentId: tu.id,
-            agentType: 'task',
+            agentType: (tu.input.subagent_type as string) || 'unknown',
             description: (tu.input.description as string) || (tu.input.prompt as string) || undefined,
+            prompt: (tu.input.prompt as string) || undefined,
+            model: (tu.input.model as string) || undefined,
+            messageId,
           };
           nodes.push(subagentNode);
         } else if (tu.name.startsWith('mcp__') || tu.name === 'Bash' || tu.name === 'Read' || tu.name === 'Write' || tu.name === 'Edit' || tu.name === 'Glob' || tu.name === 'Grep') {

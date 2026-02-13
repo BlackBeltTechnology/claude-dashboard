@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useSessionStore } from '../store/sessionStore';
+import { getSessionDisplayName } from '../utils/sessionName';
 import type { WSMessage, StateChangePayload } from 'shared';
 
 /**
@@ -31,6 +32,10 @@ export function useNotifications(lastMessage: WSMessage | null) {
 
   const showNotification = useCallback(
     (title: string, body: string) => {
+      // Check if notifications are enabled in settings
+      const enabled = localStorage.getItem('claude-dashboard-browser-notifications') === 'true';
+      if (!enabled) return;
+
       if (permissionRef.current !== 'granted') return;
       if (document.hasFocus()) return; // Don't notify if dashboard is focused
 
@@ -65,13 +70,16 @@ export function useNotifications(lastMessage: WSMessage | null) {
     if (payload.newState === 'waiting') {
       const sessions = useSessionStore.getState().sessions;
       const session = sessions.find((s) => s.id === payload.sessionId);
-      const sessionLabel =
-        session?.summary || `Session ${payload.sessionId.slice(0, 12)}...`;
 
-      showNotification(
-        'Session Waiting',
-        `${sessionLabel} is waiting for input`
-      );
+      // Build notification title with folder path
+      const folderPath = payload.cwd || session?.cwd || 'Unknown folder';
+      const title = `Session Ready: ${folderPath}`;
+
+      // Build notification body with last command
+      const lastCommand = payload.lastUserPrompt || session?.lastUserPrompt || 'No command recorded';
+      const body = `Last command: ${lastCommand.length > 60 ? lastCommand.slice(0, 60) + '...' : lastCommand}`;
+
+      showNotification(title, body);
     }
   }, [lastMessage, showNotification]);
 }

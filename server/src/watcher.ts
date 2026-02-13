@@ -15,6 +15,8 @@ import {
   loadSessionIndex,
   determineSessionState,
   getDebugLogMtime,
+  isSessionClosed,
+  hasIdlePromptMarker,
 } from './session-discovery.js';
 import { parseJSONL, extractMetadata, type ParsedEntry } from './jsonl-parser.js';
 import { readFile } from 'fs/promises';
@@ -29,7 +31,7 @@ const STATE_POLL_INTERVAL_MS = 2000;
 export interface SessionManagerEvents {
   'session-update': (sessionId: string, session: Session) => void;
   'subagent-update': (parentSessionId: string, agentId: string, subagent: Session) => void;
-  'state-change': (sessionId: string, agentId: string | undefined, previousState: SessionState, newState: SessionState) => void;
+  'state-change': (sessionId: string, agentId: string | undefined, previousState: SessionState, newState: SessionState, cwd?: string, lastUserPrompt?: string) => void;
   'error': (error: Error) => void;
 }
 
@@ -90,6 +92,16 @@ export class SessionManager extends EventEmitter {
    * Map session IDs to their JSONL file paths for polling.
    */
   private sessionJsonlPaths: Map<string, string> = new Map();
+  /**
+   * Cache of session IDs confirmed as closed (SessionEnd in debug log).
+   * Once closed, a session stays closed — no need to re-read the debug log.
+   */
+  private closedSessions: Set<string> = new Set();
+  /**
+   * Cache of session IDs with idle_prompt marker in debug log.
+   * Once idle_prompt is detected, it stays cached until the session closes.
+   */
+  private idlePromptSessions: Set<string> = new Set();
   private statePollingInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(claudeDir: string) {
@@ -167,6 +179,8 @@ export class SessionManager extends EventEmitter {
     this.debouncer.clear();
     this.previousStates.clear();
     this.sessionJsonlPaths.clear();
+    this.closedSessions.clear();
+    this.idlePromptSessions.clear();
     this.isInitialized = false;
     console.log('[SessionManager] Stopped');
   }
@@ -220,18 +234,10 @@ export class SessionManager extends EventEmitter {
     const previousState = this.previousStates.get(filename);
 
     // Parse updated session
-    const session = await parseSessionFile(path, indexEntry);
+    // parseSessionFile now checks debug log internally when claudeDir is provided
+    const session = await parseSessionFile(path, indexEntry, this.claudeDir);
     if (!session) {
       return;
-    }
-
-    // Fetch actual debug log mtime for accurate state detection
-    const debugMtime = await getDebugLogMtime(this.claudeDir, filename);
-    if (debugMtime !== null) {
-      const content = await readFile(path, 'utf-8');
-      const entries = parseJSONL(content);
-      const metadata = extractMetadata(entries, filename);
-      session.state = determineSessionState(entries, debugMtime, metadata.lastTimestamp);
     }
 
     // Discover subagents
@@ -244,11 +250,11 @@ export class SessionManager extends EventEmitter {
     this.sessions.set(filename, session);
 
     // Update previous state and emit state-change if changed
-    this.updateStateAndEmit(filename, undefined, session.state);
+    this.updateStateAndEmit(filename, undefined, session.state, session);
 
     // Update subagent previous states
     for (const subagent of session.subagents) {
-      this.updateStateAndEmit(filename, subagent.id, subagent.state);
+      this.updateStateAndEmit(filename, subagent.id, subagent.state, session);
     }
 
     // Emit session update
@@ -276,7 +282,7 @@ export class SessionManager extends EventEmitter {
       // Try to find and load the parent session
       const sessionPath = await findSessionFilePath(this.claudeDir, sessionId);
       if (sessionPath) {
-        const session = await parseSessionFile(sessionPath);
+        const session = await parseSessionFile(sessionPath, undefined, this.claudeDir);
         if (session) {
           this.sessions.set(sessionId, session);
           parentSession = session;
@@ -331,7 +337,7 @@ export class SessionManager extends EventEmitter {
       }
 
       // Update state tracking and emit state-change if changed
-      this.updateStateAndEmit(sessionId, agentId, state);
+      this.updateStateAndEmit(sessionId, agentId, state, parentSession);
 
       // Emit subagent update
       this.emit('subagent-update', sessionId, agentId, subagent);
@@ -347,22 +353,26 @@ export class SessionManager extends EventEmitter {
    * @param sessionId - The session ID
    * @param agentId - The subagent ID, or undefined for the main session
    * @param newState - The newly determined state
+   * @param session - The session object for extracting cwd and lastUserPrompt
    */
-  private updateStateAndEmit(sessionId: string, agentId: string | undefined, newState: SessionState): void {
+  private updateStateAndEmit(sessionId: string, agentId: string | undefined, newState: SessionState, session?: Session): void {
     const stateKey = agentId ? `${sessionId}:${agentId}` : sessionId;
     const previousState = this.previousStates.get(stateKey);
 
     this.previousStates.set(stateKey, newState);
 
     if (previousState !== undefined && previousState !== newState) {
-      this.emit('state-change', sessionId, agentId, previousState, newState);
+      // Extract cwd and lastUserPrompt from session when available
+      const cwd = session?.cwd;
+      const lastUserPrompt = session?.lastUserPrompt;
+      this.emit('state-change', sessionId, agentId, previousState, newState, cwd, lastUserPrompt);
     }
   }
 
   /**
    * Periodically poll debug log mtimes and recompute session/subagent states.
    * This catches state transitions that happen without JSONL file changes
-   * (e.g., a session going from active to idle due to inactivity).
+   * (e.g., a session going from active to waiting due to inactivity).
    */
   private async pollStates(): Promise<void> {
     for (const [sessionId, session] of this.sessions) {
@@ -388,8 +398,26 @@ export class SessionManager extends EventEmitter {
           }
         }
 
-        // Recompute session state using debug log mtime
-        const newState = determineSessionState(entries, debugMtime, lastTimestamp);
+        // Check if session was closed (use cache to avoid re-reading debug log)
+        let closed = this.closedSessions.has(sessionId);
+        if (!closed) {
+          closed = await isSessionClosed(this.claudeDir, sessionId);
+          if (closed) {
+            this.closedSessions.add(sessionId);
+          }
+        }
+
+        // Check for idle_prompt marker (use cache to avoid re-reading debug log)
+        let idlePrompt = this.idlePromptSessions.has(sessionId);
+        if (!idlePrompt && !closed) {
+          idlePrompt = await hasIdlePromptMarker(this.claudeDir, sessionId);
+          if (idlePrompt) {
+            this.idlePromptSessions.add(sessionId);
+          }
+        }
+
+        // Recompute session state using debug log mtime, closed status, and idle_prompt
+        const newState = determineSessionState(entries, debugMtime, lastTimestamp, closed, idlePrompt);
 
         // Update session state in cache
         if (session.state !== newState) {
@@ -399,7 +427,7 @@ export class SessionManager extends EventEmitter {
         }
 
         // Check for state change and emit event
-        this.updateStateAndEmit(sessionId, undefined, newState);
+        this.updateStateAndEmit(sessionId, undefined, newState, session);
 
         // Poll subagent states independently
         for (const subagent of session.subagents) {
@@ -419,7 +447,7 @@ export class SessionManager extends EventEmitter {
                   this.emit('subagent-update', sessionId, subagent.id, subagent);
                 }
 
-                this.updateStateAndEmit(sessionId, subagent.id, subState);
+                this.updateStateAndEmit(sessionId, subagent.id, subState, session);
               }
             } catch {
               // Subagent file may not exist or be temporarily unavailable

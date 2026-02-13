@@ -12,7 +12,7 @@
 import { readFile, readdir, stat, access } from 'fs/promises';
 import { readFileSync, readdirSync } from 'fs';
 import { join, basename, dirname } from 'path';
-import type { Session, SessionState, AnyNode, SubagentNode, SkillNode, MessageNode, ToolNode, ToolUseInfo, UserPromptNode, ClearMarkerNode } from 'shared';
+import type { Session, SessionState, AnyNode, SubagentNode, SkillNode, MessageNode, ToolNode, ToolUseInfo, UserPromptNode, ClearMarkerNode, HookInfo } from 'shared';
 import { parseJSONL, extractMetadata, type ParsedEntry } from './jsonl-parser.js';
 
 // State detection thresholds (in milliseconds)
@@ -434,38 +434,13 @@ export async function hasIdlePromptMarker(claudeDir: string, sessionId: string):
 }
 
 /**
- * Check if the last assistant message has no tool_use blocks
- * This indicates the assistant is waiting for user input
+ * Check if the session is waiting for user input.
+ * Only uses the idle_prompt marker from the debug log — no JSONL heuristics.
  */
-function isAssistantWaitingForUser(entries: ParsedEntry[], hasIdlePrompt?: boolean): boolean {
-  // If idle_prompt marker is present in debug log, session is definitely waiting
-  if (hasIdlePrompt) {
-    return true;
-  }
-
-  if (entries.length === 0) return false;
-
-  const lastEntry = entries[entries.length - 1];
-
-  // If last entry is an assistant message with no tool_use, it's waiting for user
-  if (lastEntry.type === 'assistant' && lastEntry.role === 'assistant') {
-    return !lastEntry.toolUses || lastEntry.toolUses.length === 0;
-  }
-
-  return false;
+function isAssistantWaitingForUser(hasIdlePrompt?: boolean): boolean {
+  return !!hasIdlePrompt;
 }
 
-/**
- * Check if there's a turn_duration entry in the last few entries.
- * This indicates a turn completed and the session is waiting for user input.
- */
-function hasTurnDurationEntry(entries: ParsedEntry[]): boolean {
-  if (entries.length === 0) return false;
-
-  // Check the last 5 entries for a 'result' type entry (turn completed)
-  const lastEntries = entries.slice(-5);
-  return lastEntries.some(entry => entry.type === 'result');
-}
 
 /**
  * Check if session has a completion indicator (summary entry)
@@ -525,9 +500,11 @@ export function determineSessionState(
     return 'active';
   }
 
-  // 3. Waiting: idle_prompt in debug log OR (assistant message with no tool_use + turn_duration)
-  const waiting = isAssistantWaitingForUser(entries, hasIdlePrompt);
-  if (waiting || hasTurnDurationEntry(entries)) {
+  // 3. Waiting: only when idle_prompt marker exists in debug log
+  // But if the debug log is very stale (>1 hour), the session was likely killed/crashed
+  // without a proper SessionEnd — treat as idle instead of perpetually "waiting"
+  const STALE_WAITING_MS = 60 * 60 * 1000; // 1 hour
+  if (isAssistantWaitingForUser(hasIdlePrompt) && timeSinceActivity < STALE_WAITING_MS) {
     return 'waiting';
   }
 
@@ -548,6 +525,22 @@ export function buildNodes(entries: ParsedEntry[]): AnyNode[] {
   for (const entry of entries) {
     if (entry.toolResult) {
       toolResults.set(entry.toolResult.toolUseId, entry.toolResult);
+    }
+  }
+
+  // Build hook progress lookup map (toolUseId -> HookInfo[])
+  const hooksByToolId = new Map<string, HookInfo[]>();
+  for (const entry of entries) {
+    if (entry.hookProgress) {
+      const hook: HookInfo = {
+        event: entry.hookProgress.event,
+        hookName: entry.hookProgress.hookName,
+        command: entry.hookProgress.command,
+        timestamp: entry.hookProgress.timestamp,
+      };
+      const existing = hooksByToolId.get(entry.hookProgress.toolUseId) || [];
+      existing.push(hook);
+      hooksByToolId.set(entry.hookProgress.toolUseId, existing);
     }
   }
 
@@ -613,6 +606,7 @@ export function buildNodes(entries: ParsedEntry[]): AnyNode[] {
               commandName: commandNameMatch ? commandNameMatch[1].trim() : undefined,
               commandMetadata: hasXml ? entry.content.slice(0, 500) : undefined,
               isCommand: !!commandNameMatch,
+              hooks: hooksByToolId.get(entry.uuid),
             };
             nodes.push(userPromptNode);
           }
@@ -647,6 +641,8 @@ export function buildNodes(entries: ParsedEntry[]): AnyNode[] {
               sourceFilePath: agentType !== 'unknown'
                 ? `~/.claude/agents/${agentType}.md`
                 : undefined,
+              messageId: entry.messageId,
+              hooks: hooksByToolId.get(tool.id),
             };
             nodes.push(subagentNode);
           } else if (tool.name === 'Skill') {
@@ -666,8 +662,12 @@ export function buildNodes(entries: ParsedEntry[]): AnyNode[] {
               success: toolResult?.success,
               prompt: skillInput.prompt as string | undefined,
               result: toolResult?.content,
+              hooks: hooksByToolId.get(tool.id),
             };
             nodes.push(skillNode);
+          } else if (tool.name === 'TaskOutput') {
+            // TaskOutput just collects results from already-displayed subagent boxes - skip it
+            continue;
           } else {
             // Regular tool call
             const toolResult = toolResults.get(tool.id);
@@ -680,6 +680,7 @@ export function buildNodes(entries: ParsedEntry[]): AnyNode[] {
               toolName: tool.name,
               input: tool.input,
               output: toolResult?.content,
+              hooks: hooksByToolId.get(tool.id),
             };
             nodes.push(toolNode);
           }
@@ -875,13 +876,16 @@ export async function discoverSubagents(session: Session, sessionJsonlPath: stri
   session.subagents.sort((a, b) => a.createdAt - b.createdAt);
 
   // Backfill correct agentId from discovered subagents into SubagentNode objects
-  // Match by timestamp proximity (within 1 second)
+  // Match by timestamp proximity (within 10s), tracking already-matched nodes
+  // to avoid assigning multiple subagents to the same SubagentNode
+  const matchedNodeIds = new Set<string>();
   for (const subagent of session.subagents) {
     const subagentNode = session.nodes.find(
-      (n) => n.type === 'subagent' && Math.abs(n.timestamp - subagent.createdAt) < 1000
+      (n) => n.type === 'subagent' && !matchedNodeIds.has(n.id) && Math.abs(n.timestamp - subagent.createdAt) < 10000
     );
     if (subagentNode && subagentNode.type === 'subagent') {
       subagentNode.agentId = subagent.id;
+      matchedNodeIds.add(subagentNode.id);
     }
   }
 }

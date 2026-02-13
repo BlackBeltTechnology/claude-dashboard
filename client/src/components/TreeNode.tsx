@@ -1,5 +1,6 @@
 import React from 'react';
-import type { AnyNode, SessionState, Session } from 'shared';
+import type { AnyNode, SessionState, Session, ToolGroup } from 'shared';
+import { getSessionDisplayName } from '../utils/sessionName';
 
 // Icons for different node types
 const NODE_ICONS: Record<string, string> = {
@@ -9,13 +10,16 @@ const NODE_ICONS: Record<string, string> = {
   skill: '\u26A1',           // Lightning bolt
   subagent: '\u{1F500}',     // Shuffle
   tool: '\u{1F527}',         // Wrench
+  directory: '\u{1F4C1}',    // Folder
+  'user-prompt': '\u{1F4AC}',    // Speech bubble
+  'clear-marker': '\u2702',       // Scissors
 };
 
 // Status colors
 const STATUS_COLORS: Record<SessionState, string> = {
   active: '#22c55e',   // Green
-  waiting: '#eab308',  // Yellow
-  idle: '#6b7280',     // Gray
+  waiting: '#fbbf24',  // Yellow
+  idle: '#9ca3af',     // Gray
   completed: '#3b82f6', // Blue
 };
 
@@ -69,12 +73,21 @@ const styles = {
     textOverflow: 'ellipsis',
   },
   childrenContainer: {
-    marginLeft: '20px',
+    marginLeft: '12px',
   },
 };
 
-// Type for tree node data - can be AnyNode or Session (for root sessions and subagents)
-export type TreeNodeData = AnyNode | Session;
+// Type for tree node data - can be AnyNode or Session (for root sessions and subagents) or ToolGroup
+export type TreeNodeData = AnyNode | Session | ToolGroup | DirectoryNodeData;
+
+// Interface for directory node data
+export interface DirectoryNodeData {
+  id: string;
+  type: 'directory';
+  label: string;
+  sessionCount: number;
+  cwd: string;
+}
 
 interface TreeNodeProps {
   node: TreeNodeData;
@@ -83,6 +96,7 @@ interface TreeNodeProps {
   isSelected: boolean;
   hasChildren: boolean;
   isHighlighted?: boolean;
+  labelOverride?: string;
   onToggle: () => void;
   onSelect: () => void;
   children?: React.ReactNode;
@@ -90,9 +104,21 @@ interface TreeNodeProps {
 
 function getNodeIcon(node: TreeNodeData): string {
   if ('type' in node) {
-    // It's an AnyNode
+    // It's an AnyNode, ToolGroup, or DirectoryNode
     if (node.type === 'message') {
       return NODE_ICONS[`message-${node.role}`] || NODE_ICONS['message-user'];
+    }
+    if (node.type === 'tool-group') {
+      return NODE_ICONS.tool;  // Wrench icon, same as individual tools
+    }
+    if (node.type === 'directory') {
+      return NODE_ICONS.directory;
+    }
+    if (node.type === 'user-prompt') {
+      return NODE_ICONS['user-prompt'];
+    }
+    if (node.type === 'clear-marker') {
+      return NODE_ICONS['clear-marker'];
     }
     return NODE_ICONS[node.type] || '\u{1F4C4}'; // Default document icon
   }
@@ -102,29 +128,58 @@ function getNodeIcon(node: TreeNodeData): string {
 
 function getNodeLabel(node: TreeNodeData): string {
   if ('type' in node) {
-    // It's an AnyNode
+    // It's an AnyNode, ToolGroup, or DirectoryNode
+    if (node.type === 'tool-group') {
+      return `${node.toolName} (${node.count})`;
+    }
+    if (node.type === 'directory') {
+      return node.label;
+    }
     switch (node.type) {
       case 'session':
         return node.summary || `Session ${node.sessionId.slice(0, 8)}...`;
       case 'message':
-        return node.content.length > 50
+        const content = node.content.length > 50
           ? node.content.slice(0, 50) + '...'
-          : node.content || `${node.role} message`;
+          : node.content || '(empty message)';
+        return content;
       case 'skill':
         return `Skill: ${node.skillName}`;
       case 'subagent':
         return `Subagent: ${node.agentType}`;
       case 'tool':
         return `Tool: ${node.toolName}`;
+      case 'user-prompt': {
+        // Show command name if it's a command, otherwise truncated prompt text
+        if (node.isCommand && node.commandName) {
+          return `Command: ${node.commandName}`;
+        }
+        const truncated = node.promptText.length > 50
+          ? node.promptText.slice(0, 50) + '...'
+          : node.promptText;
+        return truncated;
+      }
+      case 'clear-marker':
+        return `/clear #${node.clearIndex + 1}`;
       default:
         return 'Unknown node';
     }
   }
-  // It's a Session
-  return node.summary || `Session ${node.id.slice(0, 8)}...`;
+  // It's a Session (root or subagent)
+  // Check if it's a subagent session by ID length (subagent IDs are ~7 chars, UUIDs are 36 chars)
+  if (node.id.length < 20) {
+    // Subagent session - show agent type or summary, not directory name
+    return node.summary || 'Task Agent';
+  }
+  // Root session - show directory name
+  return getSessionDisplayName(node);
 }
 
 function getNodeState(node: TreeNodeData): SessionState {
+  // Directory nodes don't have a state, return 'active' as default
+  if ('type' in node && node.type === 'directory') {
+    return 'active' as SessionState;
+  }
   return node.state;
 }
 
@@ -135,6 +190,7 @@ export function TreeNode({
   isSelected,
   hasChildren,
   isHighlighted,
+  labelOverride,
   onToggle,
   onSelect,
   children,
@@ -143,7 +199,7 @@ export function TreeNode({
 
   const rowStyle: React.CSSProperties = {
     ...styles.nodeRow,
-    paddingLeft: `${8 + depth * 16}px`,
+    paddingLeft: `${8 + depth * 12}px`,
     ...(isHovered && !isSelected ? styles.nodeRowHover : {}),
     ...(isSelected ? styles.nodeRowSelected : {}),
     ...(isHighlighted
@@ -162,8 +218,14 @@ export function TreeNode({
   };
 
   const icon = getNodeIcon(node);
-  const label = getNodeLabel(node);
+  const label = labelOverride || getNodeLabel(node);
   const state = getNodeState(node);
+
+  // Check if this is a clear-marker node for special styling
+  const isClearMarker = 'type' in node && node.type === 'clear-marker';
+  const labelStyle = isClearMarker
+    ? { ...styles.nodeText, color: '#dc2626', fontWeight: 600 }
+    : styles.nodeText;
 
   return (
     <div style={styles.nodeContainer}>
@@ -186,6 +248,7 @@ export function TreeNode({
 
         {/* Status dot */}
         <div
+          className={state === 'active' ? 'status-dot-active' : undefined}
           style={{
             ...styles.statusDot,
             backgroundColor: STATUS_COLORS[state],
@@ -194,7 +257,7 @@ export function TreeNode({
         />
 
         {/* Node label */}
-        <span style={styles.nodeText} title={label}>
+        <span style={labelStyle} title={label}>
           {label}
         </span>
       </div>

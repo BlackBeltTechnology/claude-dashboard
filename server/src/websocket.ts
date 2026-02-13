@@ -220,13 +220,17 @@ export class WebSocketManager {
     sessionId: string,
     previousState: Session['state'],
     newState: Session['state'],
-    agentId?: string
+    agentId?: string,
+    cwd?: string,
+    lastUserPrompt?: string
   ): void {
     const payload: StateChangePayload = {
       sessionId,
       agentId,
       previousState,
       newState,
+      cwd,
+      lastUserPrompt,
     };
     this.broadcast({
       type: 'state-change',

@@ -54,12 +54,15 @@ export interface SubagentBoxNodeData {
     inputSummary?: string;
     content?: string;
     state: SessionState;
+    hooks?: Array<{ event: string; hookName: string; command: string; timestamp: number }>;
     nodeData: AnyNode | AnyNode[] | null;  // Original node data for detail panel clicks (array for grouped model outputs)
     count?: number;  // For grouped tool cards: number of tools in the group
   }>;
   // Expanded dimensions (for parent node sizing)
   expandedWidth?: number;
   expandedHeight?: number;
+  // Hooks from the SubagentNode (Task tool_use) in the parent session
+  hooks?: Array<{ event: string; hookName: string; command: string; timestamp: number }>;
   // Callbacks (injected by GraphView post-layout)
   onToggleExpand?: () => void;
   onInternalNodeClick?: (nodeId: string) => void;
@@ -196,41 +199,50 @@ function extractToolCallSummaries(subagent: Session): ToolCallSummary[] {
 }
 
 /**
- * Detect parallel subagent groups by timestamp proximity.
- * Claude Code writes each parallel tool call as a separate JSONL entry with
- * different UUIDs, so we can't rely on shared parentId. Instead, subagents
- * created within a tight time window (10 seconds) are considered parallel.
- * Returns a map of groupKey -> array of subagent session IDs.
+ * Detect parallel subagent groups by checking the parentId field on SubagentNodes.
+ * In Claude's API, truly parallel tool calls appear as MULTIPLE tool_use content blocks
+ * within a SINGLE assistant message. Sequential tool calls are in SEPARATE assistant messages.
+ * The parentId (which is the assistant message UUID) is the definitive indicator:
+ * - Same parentId = parallel (spawned in same assistant turn)
+ * - Different parentId = sequential (spawned in different assistant turns)
+ * Returns a map of parentId -> array of subagent session IDs.
  * Only includes groups with 2+ parallel subagents.
  */
 function detectParallelSubagentGroups(
-  subagents: Session[]
+  subagents: Session[],
+  allNodes: AnyNode[] = []
 ): Map<string, string[]> {
-  const sorted = [...subagents].sort((a, b) => a.createdAt - b.createdAt);
   const parallelGroups = new Map<string, string[]>();
-  const assigned = new Set<string>();
-  const PARALLEL_WINDOW_MS = 10_000; // 10 seconds
+  if (subagents.length < 2) return parallelGroups;
 
-  for (let i = 0; i < sorted.length; i++) {
-    if (assigned.has(sorted[i].id)) continue;
-
-    const group: string[] = [sorted[i].id];
-    assigned.add(sorted[i].id);
-
-    // Collect all subagents created within the time window of the first one
-    for (let j = i + 1; j < sorted.length; j++) {
-      if (assigned.has(sorted[j].id)) continue;
-      if (sorted[j].createdAt - sorted[i].createdAt <= PARALLEL_WINDOW_MS) {
-        group.push(sorted[j].id);
-        assigned.add(sorted[j].id);
-      } else {
-        break; // sorted, so no more within window
-      }
+  // Build a map of subagent session ID -> messageId from SubagentNode objects.
+  // messageId is the API message ID (msg_xxx) which is the SAME for all tool_use
+  // blocks in a single assistant turn. This is the true indicator of parallel execution:
+  // - Same messageId = multiple Task calls in one assistant message = parallel
+  // - Different messageId = separate assistant messages = sequential
+  const subagentIdToMessageId = new Map<string, string>();
+  for (const node of allNodes) {
+    if (node.type === 'subagent' && node.messageId) {
+      subagentIdToMessageId.set(node.agentId, node.messageId);
     }
+  }
 
-    if (group.length >= 2) {
-      const groupKey = `parallel-${sorted[i].createdAt}`;
-      parallelGroups.set(groupKey, group);
+  // Group subagents by messageId
+  const messageIdGroups = new Map<string, string[]>();
+  for (const subagent of subagents) {
+    const messageId = subagentIdToMessageId.get(subagent.id);
+    if (!messageId) continue;
+
+    if (!messageIdGroups.has(messageId)) {
+      messageIdGroups.set(messageId, []);
+    }
+    messageIdGroups.get(messageId)!.push(subagent.id);
+  }
+
+  // Only keep groups with 2+ subagents (truly parallel)
+  for (const [messageId, subagentIds] of messageIdGroups) {
+    if (subagentIds.length >= 2) {
+      parallelGroups.set(messageId, subagentIds);
     }
   }
 
@@ -243,7 +255,8 @@ export function convertSessionToGraph(
   expandedGroups: Set<string>,  // No longer used for main graph, kept for signature compatibility
   expandedSubagents: Set<string>,  // No longer used, kept for signature compatibility
   expandedSubagentBoxes: Set<string> = new Set(),  // Set of expanded subagent box IDs for this session
-  hiddenNodeTypes: Set<string> = new Set()  // Node types to hide from the graph
+  hiddenNodeTypes: Set<string> = new Set(),  // Node types to hide from the graph
+  nodeTypeFilters: Map<string, string> = new Map()  // Content filters per category
 ): GraphData {
   const nodes: Node<CustomNodeData>[] = [];
   const edges: Edge[] = [];
@@ -389,7 +402,7 @@ export function convertSessionToGraph(
   // Detect parallel subagent groups
   const sortedSubagents = [...session.subagents].sort((a, b) => a.createdAt - b.createdAt);
   const subagentNodes = session.nodes.filter(n => n.type === 'subagent');
-  const parallelGroups = detectParallelSubagentGroups(sortedSubagents);
+  const parallelGroups = detectParallelSubagentGroups(sortedSubagents, session.nodes);
 
   // Build set of all parallel subagent IDs
   const parallelSubagentIds = new Set<string>();
@@ -397,8 +410,8 @@ export function convertSessionToGraph(
     subIds.forEach(id => parallelSubagentIds.add(id));
   }
 
-  // Apply node type filters
-  const filteredTimeline = hiddenNodeTypes.size > 0
+  // Apply node type filters (category-level visibility)
+  let filteredByCategory = hiddenNodeTypes.size > 0
     ? processedTimeline.filter((item) => {
         if (hiddenNodeTypes.has('tools') && (item.type === 'tool' || item.type === 'tool-group')) return false;
         if (hiddenNodeTypes.has('model') && (item.type === 'model' || item.type === 'model-group')) return false;
@@ -408,6 +421,165 @@ export function convertSessionToGraph(
         return true;
       })
     : processedTimeline;
+
+  // Apply content-level filters (within visible categories)
+  const premergeTimeline = nodeTypeFilters.size > 0
+    ? filteredByCategory.filter((item) => {
+        // For tool/tool-group: check toolName against 'tools' filter
+        if (item.type === 'tool' || item.type === 'tool-group') {
+          const toolFilter = nodeTypeFilters.get('tools');
+          if (toolFilter) {
+            const toolName = item.type === 'tool-group'
+              ? (item.data as ToolGroup).toolName
+              : (item.data as import('shared').ToolNode).toolName;
+            if (!toolName.toLowerCase().includes(toolFilter.toLowerCase())) return false;
+          }
+        }
+
+        // For subagent: check agentType/agentName against 'subagents' filter
+        if (item.type === 'subagent') {
+          const subagentFilter = nodeTypeFilters.get('subagents');
+          if (subagentFilter) {
+            const subagent = item.data as Session;
+            // Find corresponding SubagentNode for agentType/agentName
+            const subagentNode = session.nodes.find((n): n is import('shared').SubagentNode => n.type === 'subagent' && n.agentId === subagent.id);
+            const agentType = subagentNode?.agentType || '';
+            const agentName = subagentNode?.agentName || '';
+            const searchText = `${agentType} ${agentName}`.toLowerCase();
+            if (!searchText.includes(subagentFilter.toLowerCase())) return false;
+          }
+        }
+
+        // For user-prompt: check promptText against 'prompts' filter
+        if (item.type === 'user-prompt') {
+          const promptFilter = nodeTypeFilters.get('prompts');
+          if (promptFilter) {
+            const promptNode = item.data as import('shared').UserPromptNode;
+            if (!promptNode.promptText.toLowerCase().includes(promptFilter.toLowerCase())) return false;
+          }
+        }
+
+        // For model/model-group: check content against 'model' filter
+        if (item.type === 'model' || item.type === 'model-group') {
+          const modelFilter = nodeTypeFilters.get('model');
+          if (modelFilter) {
+            const modelNodes = item.type === 'model-group'
+              ? (item.nodes || [item.data as AnyNode])
+              : [item.data as AnyNode];
+            // Check if any model node's content matches
+            const anyMatch = modelNodes.some((node) => {
+              const content = (node as any).content || '';
+              return content.toLowerCase().includes(modelFilter.toLowerCase());
+            });
+            if (!anyMatch) return false;
+          }
+        }
+
+        // For skill: check skillName against 'skills' filter
+        if (item.type === 'skill') {
+          const skillFilter = nodeTypeFilters.get('skills');
+          if (skillFilter) {
+            const skillNode = item.data as import('shared').SkillNode;
+            if (!skillNode.skillName.toLowerCase().includes(skillFilter.toLowerCase())) return false;
+          }
+        }
+
+        return true;
+      })
+    : filteredByCategory;
+
+  // Merge consecutive same-type items after filtering
+  // (filtering can remove intervening nodes, making same-type items adjacent)
+  const filteredTimeline: TimelineItem[] = [];
+  for (let ti = 0; ti < premergeTimeline.length; ti++) {
+    const item = premergeTimeline[ti];
+
+    // Merge consecutive same-name tool/tool-group items
+    const itemToolName = item.type === 'tool-group'
+      ? (item.data as ToolGroup).toolName
+      : item.type === 'tool'
+        ? (item.data as import('shared').ToolNode).toolName
+        : null;
+
+    if (itemToolName) {
+      const toolNodes: import('shared').ToolNode[] = item.type === 'tool-group'
+        ? [...(item.data as ToolGroup).nodes]
+        : [item.data as import('shared').ToolNode];
+
+      let tj = ti + 1;
+      while (tj < premergeTimeline.length) {
+        const next = premergeTimeline[tj];
+        const nextToolName = next.type === 'tool-group'
+          ? (next.data as ToolGroup).toolName
+          : next.type === 'tool'
+            ? (next.data as import('shared').ToolNode).toolName
+            : null;
+        if (nextToolName !== itemToolName) break;
+        if (next.type === 'tool-group') {
+          toolNodes.push(...(next.data as ToolGroup).nodes);
+        } else {
+          toolNodes.push(next.data as import('shared').ToolNode);
+        }
+        tj++;
+      }
+
+      if (toolNodes.length === 1) {
+        filteredTimeline.push(item);
+      } else {
+        const firstNode = toolNodes[0];
+        filteredTimeline.push({
+          type: 'tool-group',
+          timestamp: firstNode.timestamp,
+          data: {
+            id: `tool-group-${itemToolName}-${firstNode.id}`,
+            type: 'tool-group',
+            toolName: itemToolName,
+            nodes: toolNodes,
+            count: toolNodes.length,
+            state: toolNodes.some(n => n.state === 'active') ? 'active' : firstNode.state,
+            timestamp: firstNode.timestamp,
+            parentId: firstNode.parentId,
+          } as ToolGroup,
+        });
+      }
+      ti = tj - 1;
+      continue;
+    }
+
+    // Merge consecutive model/model-group items
+    if (item.type === 'model' || item.type === 'model-group') {
+      const modelNodes: AnyNode[] = item.type === 'model-group'
+        ? [...(item.nodes || [item.data as AnyNode])]
+        : [item.data as AnyNode];
+
+      let tj = ti + 1;
+      while (tj < premergeTimeline.length && (premergeTimeline[tj].type === 'model' || premergeTimeline[tj].type === 'model-group')) {
+        const next = premergeTimeline[tj];
+        if (next.type === 'model-group') {
+          modelNodes.push(...(next.nodes || [next.data as AnyNode]));
+        } else {
+          modelNodes.push(next.data as AnyNode);
+        }
+        tj++;
+      }
+
+      if (modelNodes.length === 1) {
+        filteredTimeline.push(item);
+      } else {
+        filteredTimeline.push({
+          type: 'model-group',
+          timestamp: modelNodes[0].timestamp,
+          data: modelNodes[0],
+          nodes: modelNodes,
+          count: modelNodes.length,
+        });
+      }
+      ti = tj - 1;
+      continue;
+    }
+
+    filteredTimeline.push(item);
+  }
 
   // Process timeline items
   let chainPoint = sessionNodeId;
@@ -451,6 +623,8 @@ export function convertSessionToGraph(
       const toolGroup = item.data as ToolGroup;
       const toolGroupNodeId = createNodeId(session.id, toolGroup.id);
 
+      // Aggregate hooks from all tool nodes in the group
+      const groupHooks = toolGroup.nodes.flatMap(n => n.hooks || []);
       const toolGroupFlowNode: Node<ToolGroupNodeData> = {
         id: toolGroupNodeId,
         type: 'tool-group',
@@ -461,6 +635,7 @@ export function convertSessionToGraph(
           toolName: toolGroup.toolName,
           count: toolGroup.count,
           groupId: toolGroup.id,
+          ...(groupHooks.length > 0 ? { hooks: groupHooks } : {}),
         },
       };
       nodes.push(toolGroupFlowNode);
@@ -493,6 +668,7 @@ export function convertSessionToGraph(
           toolName: toolNode.toolName,
           count: 1,
           groupId: toolNode.id,
+          ...(toolNode.hooks && toolNode.hooks.length > 0 ? { hooks: toolNode.hooks } : {}),
         },
       };
       nodes.push(singleToolFlowNode);
@@ -695,6 +871,11 @@ export function convertSessionToGraph(
           // Build internal nodes array
           const internalNodes: SubagentBoxNodeData['internalNodes'] = [];
 
+          // Split subagent hooks: Pre/Start → request, Post/Stop → response
+          const saHooks = subagentNode?.hooks || [];
+          const requestHooks = saHooks.filter(h => /pre|start/i.test(h.event));
+          const responseHooks = saHooks.filter(h => /post|stop/i.test(h.event));
+
           // First: Request node
           internalNodes.push({
             id: `${parallelSubagent.id}-request`,
@@ -702,6 +883,7 @@ export function convertSessionToGraph(
             label: 'Request',
             state: parallelSubagent.state,
             nodeData: null,
+            ...(requestHooks.length > 0 ? { hooks: requestHooks } : {}),
           });
 
           // Middle: Interleave tool nodes and assistant (model) messages chronologically
@@ -789,6 +971,10 @@ export function convertSessionToGraph(
                 // Group of consecutive same-name tools
                 const firstTool = toolRun[0].data as AnyNode;
                 const toolNode = parallelSubagent.nodes.find(n => n.id === firstTool.id);
+                const groupHooks = toolRun.flatMap(t => {
+                  const n = parallelSubagent.nodes.find(nd => nd.id === t.data.id);
+                  return (n && 'hooks' in n && Array.isArray(n.hooks)) ? n.hooks : [];
+                });
                 internalNodes.push({
                   id: `tool-group-${currentName}-${firstTool.id}`,
                   type: 'tool',
@@ -798,10 +984,12 @@ export function convertSessionToGraph(
                   state: toolRun.some(t => (t.data as AnyNode & { state: SessionState }).state === 'active') ? 'active' as SessionState : toolData.state,
                   nodeData: toolNode || null,
                   count: toolRun.length,
+                  ...(groupHooks.length > 0 ? { hooks: groupHooks } : {}),
                 });
               } else {
                 // Single tool call
                 const toolNode = parallelSubagent.nodes.find(n => n.id === toolData.id);
+                const singleHooks = toolNode && 'hooks' in toolNode && Array.isArray(toolNode.hooks) ? toolNode.hooks : [];
                 internalNodes.push({
                   id: toolData.id,
                   type: 'tool',
@@ -810,6 +998,7 @@ export function convertSessionToGraph(
                   inputSummary: item.toolSummary?.inputSummary || '',
                   state: toolData.state,
                   nodeData: toolNode || null,
+                  ...(singleHooks.length > 0 ? { hooks: singleHooks } : {}),
                 });
               }
               ti = tj;
@@ -825,16 +1014,39 @@ export function convertSessionToGraph(
             label: 'Response',
             state: parallelSubagent.state,
             nodeData: null,
+            ...(responseHooks.length > 0 ? { hooks: responseHooks } : {}),
           });
 
           // Filter internal nodes based on hiddenNodeTypes
-          const filteredInternalNodes = internalNodes.filter((iNode) => {
+          let filteredInternalNodes = internalNodes.filter((iNode) => {
             if (hiddenNodeTypes.has('tools') && iNode.type === 'tool') return false;
             if (hiddenNodeTypes.has('model') && iNode.type === 'model') return false;
             // Request and response nodes don't have a direct filter (they're structural)
-            // But they could be associated with 'prompts' filter if we want that behavior
             return true;
           });
+
+          // Apply content-level filters to internal nodes
+          if (nodeTypeFilters.size > 0) {
+            filteredInternalNodes = filteredInternalNodes.filter((iNode) => {
+              // For tool nodes: check toolName against 'tools' filter
+              if (iNode.type === 'tool') {
+                const toolFilter = nodeTypeFilters.get('tools');
+                if (toolFilter && iNode.toolName) {
+                  if (!iNode.toolName.toLowerCase().includes(toolFilter.toLowerCase())) return false;
+                }
+              }
+
+              // For model nodes: check content against 'model' filter
+              if (iNode.type === 'model') {
+                const modelFilter = nodeTypeFilters.get('model');
+                if (modelFilter && iNode.content) {
+                  if (!iNode.content.toLowerCase().includes(modelFilter.toLowerCase())) return false;
+                }
+              }
+
+              return true;
+            });
+          }
 
           // Determine lastNodeLabel for collapsed view
           let lastNodeLabel = 'Response';
@@ -865,7 +1077,7 @@ export function convertSessionToGraph(
 
             // Calculate expanded dimensions based on filtered nodes
             const childWidth = 160;
-            const childGap = 15;
+            const childGap = 40;
             const childStep = childWidth + childGap;
             const boxPadding = 15;
             const headerHeight = 38;
@@ -901,6 +1113,7 @@ export function convertSessionToGraph(
                 internalNodes: filteredInternalNodes,
                 expandedWidth,
                 expandedHeight,
+                ...(subagentNode?.hooks && subagentNode.hooks.length > 0 ? { hooks: subagentNode.hooks } : {}),
               },
             };
             nodes.push(boxNode);
@@ -923,6 +1136,7 @@ export function convertSessionToGraph(
                   prompt: requestText,
                   agentType,
                   agentColor: computedAgentColor,
+                  ...(requestHooks.length > 0 ? { hooks: requestHooks } : {}),
                 },
               } as Node<RequestNodeData>);
               childNodeIds.push(requestNodeId);
@@ -944,6 +1158,7 @@ export function convertSessionToGraph(
                       toolName: iNode.toolName || 'Tool',
                       count: iNode.count || 1,
                       groupId: iNode.id,
+                      ...(iNode.hooks && iNode.hooks.length > 0 ? { hooks: iNode.hooks } : {}),
                     },
                   } as Node<ToolGroupNodeData>);
                   childNodeIds.push(toolNodeId);
@@ -985,6 +1200,7 @@ export function convertSessionToGraph(
                   summary: responseText,
                   agentType,
                   agentColor: computedAgentColor,
+                  ...(responseHooks.length > 0 ? { hooks: responseHooks } : {}),
                 },
               } as Node<ResponseNodeData>);
               childNodeIds.push(responseNodeId);
@@ -1056,6 +1272,11 @@ export function convertSessionToGraph(
         // Build internal nodes array
         const internalNodes: SubagentBoxNodeData['internalNodes'] = [];
 
+        // Split subagent hooks: Pre/Start → request, Post/Stop → response
+        const saHooks = subagentNode?.hooks || [];
+        const requestHooks = saHooks.filter(h => /pre|start/i.test(h.event));
+        const responseHooks = saHooks.filter(h => /post|stop/i.test(h.event));
+
         // First: Request node
         internalNodes.push({
           id: `${subagent.id}-request`,
@@ -1063,6 +1284,7 @@ export function convertSessionToGraph(
           label: 'Request',
           state: subagent.state,
           nodeData: null,
+          ...(requestHooks.length > 0 ? { hooks: requestHooks } : {}),
         });
 
         // Middle: Interleave tool nodes and assistant (model) messages chronologically
@@ -1149,6 +1371,10 @@ export function convertSessionToGraph(
             if (toolRun.length > 1) {
               const firstTool = toolRun[0].data as AnyNode;
               const toolNode = subagent.nodes.find(n => n.id === firstTool.id);
+              const groupHooks = toolRun.flatMap(t => {
+                const n = subagent.nodes.find(nd => nd.id === t.data.id);
+                return (n && 'hooks' in n && Array.isArray(n.hooks)) ? n.hooks : [];
+              });
               internalNodes.push({
                 id: `tool-group-${currentName}-${firstTool.id}`,
                 type: 'tool',
@@ -1158,9 +1384,11 @@ export function convertSessionToGraph(
                 state: toolRun.some(t => (t.data as AnyNode & { state: SessionState }).state === 'active') ? 'active' as SessionState : toolData.state,
                 nodeData: toolNode || null,
                 count: toolRun.length,
+                ...(groupHooks.length > 0 ? { hooks: groupHooks } : {}),
               });
             } else {
               const toolNode = subagent.nodes.find(n => n.id === toolData.id);
+              const singleHooks = toolNode && 'hooks' in toolNode && Array.isArray(toolNode.hooks) ? toolNode.hooks : [];
               internalNodes.push({
                 id: toolData.id,
                 type: 'tool',
@@ -1169,6 +1397,7 @@ export function convertSessionToGraph(
                 inputSummary: item.toolSummary?.inputSummary || '',
                 state: toolData.state,
                 nodeData: toolNode || null,
+                ...(singleHooks.length > 0 ? { hooks: singleHooks } : {}),
               });
             }
             ti = tj;
@@ -1184,15 +1413,39 @@ export function convertSessionToGraph(
           label: 'Response',
           state: subagent.state,
           nodeData: null,
+          ...(responseHooks.length > 0 ? { hooks: responseHooks } : {}),
         });
 
         // Filter internal nodes based on hiddenNodeTypes
-        const filteredInternalNodes = internalNodes.filter((iNode) => {
+        let filteredInternalNodes = internalNodes.filter((iNode) => {
           if (hiddenNodeTypes.has('tools') && iNode.type === 'tool') return false;
           if (hiddenNodeTypes.has('model') && iNode.type === 'model') return false;
           // Request and response nodes don't have a direct filter (they're structural)
           return true;
         });
+
+        // Apply content-level filters to internal nodes
+        if (nodeTypeFilters.size > 0) {
+          filteredInternalNodes = filteredInternalNodes.filter((iNode) => {
+            // For tool nodes: check toolName against 'tools' filter
+            if (iNode.type === 'tool') {
+              const toolFilter = nodeTypeFilters.get('tools');
+              if (toolFilter && iNode.toolName) {
+                if (!iNode.toolName.toLowerCase().includes(toolFilter.toLowerCase())) return false;
+              }
+            }
+
+            // For model nodes: check content against 'model' filter
+            if (iNode.type === 'model') {
+              const modelFilter = nodeTypeFilters.get('model');
+              if (modelFilter && iNode.content) {
+                if (!iNode.content.toLowerCase().includes(modelFilter.toLowerCase())) return false;
+              }
+            }
+
+            return true;
+          });
+        }
 
         // Determine lastNodeLabel for collapsed view
         let lastNodeLabel = 'Response';
@@ -1260,6 +1513,7 @@ export function convertSessionToGraph(
               internalNodes: filteredInternalNodes,
               expandedWidth,
               expandedHeight,
+              ...(subagentNode?.hooks && subagentNode.hooks.length > 0 ? { hooks: subagentNode.hooks } : {}),
             },
           };
           nodes.push(boxNode);
@@ -1282,6 +1536,7 @@ export function convertSessionToGraph(
                 prompt: requestText,
                 agentType,
                 agentColor: computedAgentColor,
+                ...(requestHooks.length > 0 ? { hooks: requestHooks } : {}),
               },
             } as Node<RequestNodeData>);
             childNodeIds.push(requestNodeId);
@@ -1303,6 +1558,7 @@ export function convertSessionToGraph(
                     toolName: iNode.toolName || 'Tool',
                     count: iNode.count || 1,
                     groupId: iNode.id,
+                    ...(iNode.hooks && iNode.hooks.length > 0 ? { hooks: iNode.hooks } : {}),
                   },
                 } as Node<ToolGroupNodeData>);
                 childNodeIds.push(toolNodeId);
@@ -1344,6 +1600,7 @@ export function convertSessionToGraph(
                 summary: responseText,
                 agentType,
                 agentColor: computedAgentColor,
+                ...(responseHooks.length > 0 ? { hooks: responseHooks } : {}),
               },
             } as Node<ResponseNodeData>);
             childNodeIds.push(responseNodeId);
@@ -1389,14 +1646,15 @@ export function convertSessionsToGraph(
   expandedGroups: Set<string>,
   expandedSubagents: Set<string>,
   expandedSubagentBoxesMap?: Map<string, Set<string>>,
-  hiddenNodeTypes: Set<string> = new Set()
+  hiddenNodeTypes: Set<string> = new Set(),
+  nodeTypeFilters: Map<string, string> = new Map()
 ): GraphData {
   const allNodes: Node<CustomNodeData>[] = [];
   const allEdges: Edge[] = [];
 
   for (const session of sessions) {
     const sessionExpandedBoxes = expandedSubagentBoxesMap?.get(session.id) || new Set<string>();
-    const { nodes, edges } = convertSessionToGraph(session, expandedGroups, expandedSubagents, sessionExpandedBoxes, hiddenNodeTypes);
+    const { nodes, edges } = convertSessionToGraph(session, expandedGroups, expandedSubagents, sessionExpandedBoxes, hiddenNodeTypes, nodeTypeFilters);
     allNodes.push(...nodes);
     allEdges.push(...edges);
   }
@@ -1504,9 +1762,10 @@ export function createLayoutedGraph(
   expandedGroups: Set<string>,
   expandedSubagents: Set<string>,
   expandedSubagentBoxesMap?: Map<string, Set<string>>,
-  hiddenNodeTypes: Set<string> = new Set()
+  hiddenNodeTypes: Set<string> = new Set(),
+  nodeTypeFilters: Map<string, string> = new Map()
 ): GraphData {
-  const { nodes, edges } = convertSessionsToGraph(sessions, expandedGroups, expandedSubagents, expandedSubagentBoxesMap, hiddenNodeTypes);
+  const { nodes, edges } = convertSessionsToGraph(sessions, expandedGroups, expandedSubagents, expandedSubagentBoxesMap, hiddenNodeTypes, nodeTypeFilters);
   const layoutedNodes = applyDagreLayout(nodes, edges);
 
   return { nodes: layoutedNodes, edges };

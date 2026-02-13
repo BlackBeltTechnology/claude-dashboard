@@ -19,14 +19,17 @@ export interface RawJSONLEntry {
   summary?: string;
   cwd?: string;
   gitBranch?: string;
-  toolUseResult?: string;
+  toolUseResult?: string | Record<string, unknown>;
   sourceToolAssistantUUID?: string;
+  toolUseID?: string;  // Present in hook progress entries
+  parentToolUseID?: string;  // Present in hook progress entries
 }
 
 export interface RawMessage {
   role: 'user' | 'assistant';
   content: string | RawContentBlock[];
   model?: string;
+  id?: string;  // API message ID (e.g., msg_xxx) - same for all tool_use blocks in one turn
 }
 
 export interface RawContentBlock {
@@ -48,6 +51,15 @@ export interface RawProgressData {
   command?: string;
 }
 
+// Hook progress entry
+export interface HookProgressEntry {
+  toolUseId: string;    // Links to tool_use block id
+  event: string;        // e.g., "PreToolUse", "PostToolUse"
+  hookName: string;     // e.g., "PreToolUse:Task"
+  command: string;      // e.g., "python3 ..." or "callback"
+  timestamp: number;    // Unix timestamp in ms
+}
+
 // Parsed entry with normalized fields
 export interface ParsedEntry {
   uuid: string;
@@ -64,9 +76,18 @@ export interface ParsedEntry {
     toolUseId: string;
     content: string;
     isError: boolean;
+    // Structured fields from toolUseResult object
+    stdout?: string;
+    stderr?: string;
+    interrupted?: boolean;
+    success?: boolean;       // For Skill results
+    commandName?: string;    // For Skill results
   };
   gitBranch?: string;
+  cwd?: string;
   summary?: string;
+  messageId?: string;  // API message ID for parallel tool call detection
+  hookProgress?: HookProgressEntry;  // Hook execution metadata
 }
 
 /**
@@ -95,11 +116,15 @@ export function parseLine(line: string): ParsedEntry | null {
       agentId: raw.agentId,
       isSidechain: raw.isSidechain ?? false,
       gitBranch: raw.gitBranch,
+      cwd: raw.cwd,
     };
 
     // Parse message content
     if (raw.message) {
       parsed.role = raw.message.role;
+      if (raw.message.id) {
+        parsed.messageId = raw.message.id;
+      }
 
       if (typeof raw.message.content === 'string') {
         parsed.content = raw.message.content;
@@ -144,16 +169,46 @@ export function parseLine(line: string): ParsedEntry | null {
 
     // Handle tool result from top-level field
     if (raw.toolUseResult !== undefined && raw.sourceToolAssistantUUID) {
-      parsed.toolResult = {
-        toolUseId: raw.sourceToolAssistantUUID,
-        content: raw.toolUseResult,
-        isError: raw.toolUseResult.startsWith('Error:'),
-      };
+      const result = raw.toolUseResult;
+      if (typeof result === 'string') {
+        parsed.toolResult = {
+          toolUseId: raw.sourceToolAssistantUUID,
+          content: result,
+          isError: result.startsWith('Error:'),
+        };
+      } else if (typeof result === 'object' && result !== null) {
+        const obj = result as Record<string, unknown>;
+        parsed.toolResult = {
+          toolUseId: raw.sourceToolAssistantUUID,
+          content: (obj.stdout as string) || (obj.stderr as string) || JSON.stringify(result),
+          isError: !!(obj.stderr && !obj.stdout),
+          stdout: obj.stdout as string | undefined,
+          stderr: obj.stderr as string | undefined,
+          interrupted: obj.interrupted as boolean | undefined,
+          success: obj.success as boolean | undefined,
+          commandName: obj.commandName as string | undefined,
+        };
+      }
     }
 
     // Handle summary entries
     if (raw.summary) {
       parsed.summary = raw.summary;
+    }
+
+    // Handle hook progress entries
+    if (raw.type === 'progress' && raw.data?.type === 'hook_progress') {
+      const data = raw.data;
+      // Skip malformed hook entries (missing required fields)
+      if (data.hookEvent && data.hookName && data.command && raw.toolUseID) {
+        parsed.hookProgress = {
+          toolUseId: raw.toolUseID,
+          event: data.hookEvent,
+          hookName: data.hookName,
+          command: data.command,
+          timestamp: parsed.timestamp,
+        };
+      }
     }
 
     return parsed;
@@ -196,6 +251,7 @@ export interface SessionMetadata {
   firstTimestamp: number;
   lastTimestamp: number;
   gitBranch?: string;
+  cwd?: string;
   summary?: string;
   messageCount: number;
   hasSubagents: boolean;
@@ -205,6 +261,7 @@ export function extractMetadata(entries: ParsedEntry[], sessionId: string): Sess
   let firstTimestamp = Infinity;
   let lastTimestamp = 0;
   let gitBranch: string | undefined;
+  let cwd: string | undefined;
   let summary: string | undefined;
   let messageCount = 0;
   let hasSubagents = false;
@@ -219,6 +276,10 @@ export function extractMetadata(entries: ParsedEntry[], sessionId: string): Sess
 
     if (entry.gitBranch && !gitBranch) {
       gitBranch = entry.gitBranch;
+    }
+
+    if (entry.cwd && !cwd) {
+      cwd = entry.cwd;
     }
 
     if (entry.summary && !summary) {
@@ -244,6 +305,7 @@ export function extractMetadata(entries: ParsedEntry[], sessionId: string): Sess
     firstTimestamp: firstTimestamp === Infinity ? Date.now() : firstTimestamp,
     lastTimestamp: lastTimestamp || Date.now(),
     gitBranch,
+    cwd,
     summary,
     messageCount,
     hasSubagents,

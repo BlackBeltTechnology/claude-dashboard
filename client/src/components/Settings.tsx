@@ -1,8 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useSessionStore } from '../store/sessionStore';
 
-const API_BASE = 'http://localhost:3847/api';
-
 const styles = {
   overlay: {
     position: 'fixed' as const,
@@ -170,7 +168,6 @@ interface SettingsProps {
 export function Settings({ isOpen, onClose, connected, tmuxAvailable }: SettingsProps) {
   const sessions = useSessionStore((state) => state.sessions);
 
-  const [desktopNotifications, setDesktopNotifications] = useState(false);
   const [browserNotifications, setBrowserNotifications] = useState(() => {
     try {
       return localStorage.getItem('claude-dashboard-browser-notifications') === 'true';
@@ -178,49 +175,8 @@ export function Settings({ isOpen, onClose, connected, tmuxAvailable }: Settings
       return false;
     }
   });
-  const [notificationError, setNotificationError] = useState<string | null>(null);
 
   const panelRef = useRef<HTMLDivElement>(null);
-
-  // Load desktop notification preference from server
-  useEffect(() => {
-    if (!isOpen) return;
-
-    fetch(`${API_BASE}/notifications/preferences`)
-      .then((res) => {
-        if (res.ok) return res.json();
-        // If endpoint doesn't exist, just default to false
-        return { desktop: false, browser: false };
-      })
-      .then((data) => {
-        if (data && typeof data.desktop === 'boolean') {
-          setDesktopNotifications(data.desktop);
-        }
-      })
-      .catch(() => {
-        // Server may not have this endpoint yet; silently default
-      });
-  }, [isOpen]);
-
-  // Handle desktop notification toggle
-  const handleDesktopNotificationChange = useCallback(async (checked: boolean) => {
-    setNotificationError(null);
-    try {
-      const res = await fetch(`${API_BASE}/notifications/preferences`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ desktop: checked, browser: browserNotifications }),
-      });
-      if (res.ok) {
-        setDesktopNotifications(checked);
-      } else {
-        setNotificationError('Failed to update notification preference');
-      }
-    } catch {
-      // If server doesn't support this endpoint, just toggle locally
-      setDesktopNotifications(checked);
-    }
-  }, [browserNotifications]);
 
   // Handle browser notification toggle
   const handleBrowserNotificationChange = useCallback((checked: boolean) => {
@@ -355,45 +311,21 @@ export function Settings({ isOpen, onClose, connected, tmuxAvailable }: Settings
 
             <div style={styles.settingRow}>
               <div>
-                <div style={styles.settingLabel}>Desktop Notifications</div>
-                <div style={styles.settingDescription}>
-                  Server-side desktop notifications
-                </div>
-              </div>
-              <ToggleSwitch
-                checked={desktopNotifications}
-                onChange={handleDesktopNotificationChange}
-              />
-            </div>
-
-            <div style={styles.settingRow}>
-              <div>
                 <div style={styles.settingLabel}>Browser Notifications</div>
                 <div style={styles.settingDescription}>
-                  In-browser push notifications
+                  Notify when a session is waiting for input
                 </div>
+                {typeof Notification !== 'undefined' && Notification.permission === 'denied' && (
+                  <div style={{ marginTop: '8px', fontSize: '12px', color: '#888' }}>
+                    Notifications blocked. Enable in browser settings.
+                  </div>
+                )}
               </div>
               <ToggleSwitch
                 checked={browserNotifications}
                 onChange={handleBrowserNotificationChange}
               />
             </div>
-
-            {notificationError && (
-              <div
-                style={{
-                  marginTop: '8px',
-                  padding: '8px 12px',
-                  backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                  border: '1px solid rgba(239, 68, 68, 0.3)',
-                  borderRadius: '4px',
-                  fontSize: '12px',
-                  color: '#ef4444',
-                }}
-              >
-                {notificationError}
-              </div>
-            )}
           </div>
         </div>
       </div>

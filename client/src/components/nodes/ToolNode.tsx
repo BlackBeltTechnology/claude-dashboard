@@ -7,15 +7,17 @@ export interface ToolNodeData {
   state: SessionState;
   toolName: string;
   hasOutput: boolean;
+  hooks?: Array<{ event: string; hookName: string; command: string; timestamp: number }>;
   [key: string]: unknown;
 }
 
 export type ToolNodeType = Node<ToolNodeData, 'tool'>;
 
+const DEFAULT_STATUS_COLORS = { bg: '#374151', border: '#6b7280', dot: '#9ca3af' };
 const STATUS_COLORS: Record<SessionState, { bg: string; border: string; dot: string }> = {
   active: { bg: '#052e16', border: '#16a34a', dot: '#22c55e' },
-  waiting: { bg: '#422006', border: '#ca8a04', dot: '#eab308' },
-  idle: { bg: '#1f2937', border: '#4b5563', dot: '#6b7280' },
+  waiting: { bg: '#422006', border: '#ca8a04', dot: '#fbbf24' },
+  idle: { bg: '#1f2937', border: '#4b5563', dot: '#9ca3af' },
   completed: { bg: '#1e3a5f', border: '#2563eb', dot: '#3b82f6' },
 };
 
@@ -120,6 +122,13 @@ const styles = {
     padding: '1px 4px',
     borderRadius: '3px',
   },
+  hookBadge: {
+    fontSize: '9px',
+    backgroundColor: '#374151',
+    color: '#9ca3af',
+    padding: '1px 4px',
+    borderRadius: '3px',
+  },
   handle: {
     width: '5px',
     height: '5px',
@@ -129,14 +138,14 @@ const styles = {
 };
 
 function ToolNodeComponent({ data, selected }: NodeProps<ToolNodeType>) {
-  const colors = STATUS_COLORS[data.state];
+  const colors = STATUS_COLORS[data.state] ?? DEFAULT_STATUS_COLORS;
   const icon = TOOL_ICONS[data.toolName] || DEFAULT_ICON;
 
   return (
     <>
       <Handle
         type="target"
-        position={Position.Top}
+        position={Position.Left}
         style={styles.handle}
       />
       <div
@@ -161,11 +170,14 @@ function ToolNodeComponent({ data, selected }: NodeProps<ToolNodeType>) {
         <div style={styles.toolName}>
           {data.toolName}
           {data.hasOutput && <span style={styles.outputBadge}>output</span>}
+          {data.hooks && data.hooks.length > 0 && (
+            <span style={styles.hookBadge}>🪝 {data.hooks.length}</span>
+          )}
         </div>
       </div>
       <Handle
         type="source"
-        position={Position.Bottom}
+        position={Position.Right}
         style={styles.handle}
       />
     </>

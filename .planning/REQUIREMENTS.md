@@ -1,0 +1,81 @@
+# Requirements: Claude Session Dashboard
+
+**Defined:** 2026-02-11
+**Core Value:** Make Claude Code agent activity visible and navigable — users can see what's happening across all their sessions at a glance and drill into any detail.
+
+## v1.1 Requirements
+
+Requirements for verbose debugging milestone. Each maps to roadmap phases.
+
+### Navigation
+
+- [ ] **NAV-01**: User sees directory graph as the main view (no left sidebar session list)
+- [ ] **NAV-02**: User can filter sessions by active/archived state in directory graph view
+- [ ] **NAV-03**: User sees session nodes labeled with first command title (skipping /clear)
+- [ ] **NAV-04**: User can click a session node in directory graph to navigate into its timeline graph
+
+### Timeline Nodes
+
+- [x] **TIME-01**: User sees their prompt messages as nodes in the session timeline graph
+- [x] **TIME-02**: User sees /clear commands as distinct context-reset nodes in the timeline
+- [x] **TIME-03**: User sees command metadata extracted from XML format when a command/skill is invoked
+
+### Agent Debugging
+
+- [ ] **AGNT-01**: User can click individual tool calls on an agent node to open that tool's metadata in the detail panel
+- [ ] **AGNT-02**: User sees agent metadata panel showing only request (prompt) and response — no tool list
+- [ ] **AGNT-03**: User sees subagent request/response in graph view timeline
+- [ ] **AGNT-04**: User sees subagent request/response in tree view
+
+### Tree View
+
+- [ ] **TREE-01**: User sees tree view events in correct chronological order
+- [ ] **TREE-02**: User sees reduced nesting depth for cleaner timeline readability
+
+## Future Requirements
+
+None deferred — all scoped features included in v1.1.
+
+## Out of Scope
+
+| Feature | Reason |
+|---------|--------|
+| Search in directory graph | User confirmed search is irrelevant for this view |
+| Left sidebar session list | Being replaced by directory graph navigation |
+| Tool list in agent metadata panel | Tools accessible directly on agent nodes instead |
+| Nested grouping (groups within groups) | Over-complicates UI (carried from v1.0) |
+
+## Traceability
+
+Which phases cover which requirements. Updated during roadmap creation.
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| NAV-01 | Phase 12 | Pending |
+| NAV-02 | Phase 12 | Pending |
+| NAV-03 | Phase 12 | Pending |
+| NAV-04 | Phase 12 | Pending |
+| TIME-01 | Phase 13 | Complete |
+| TIME-02 | Phase 13 | Complete |
+| TIME-03 | Phase 13 | Complete |
+| AGNT-01 | Phase 14 | Pending |
+| AGNT-02 | Phase 14 | Pending |
+| AGNT-03 | Phase 14 | Pending |
+| AGNT-04 | Phase 14 | Pending |
+| TREE-01 | Phase 15 | Pending |
+| TREE-02 | Phase 15 | Pending |
+
+**Coverage:**
+- v1.1 requirements: 13 total
+- Mapped to phases: 13
+- Unmapped: 0 ✓
+
+**Phase Breakdown:**
+- Phase 12 (Navigation Refactor): 4 requirements
+- Phase 13 (Timeline Enhancement): 3 requirements
+- Phase 14 (Agent Debugging): 4 requirements
+- Phase 15 (Tree View Fixes): 2 requirements
+
+---
+*Requirements defined: 2026-02-11*
+*Last updated: 2026-02-11 after roadmap creation*

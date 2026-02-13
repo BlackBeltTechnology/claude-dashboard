@@ -52,3 +52,19 @@ p, h1, h2, h3, h4, h5, h6 {
 ::-webkit-scrollbar-thumb:hover {
   background: #16213e;
 }
+
+/* Active node pulse animation */
+@keyframes pulse-active {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(1.4);
+  }
+}
+
+.status-dot-active {
+  animation: pulse-active 1.5s ease-in-out infinite;
+}
