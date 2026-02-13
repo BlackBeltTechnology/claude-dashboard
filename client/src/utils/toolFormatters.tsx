@@ -84,6 +84,69 @@ const styles = {
     position: 'relative' as const,
     marginTop: '8px',
   },
+  unifiedDiffBlock: {
+    marginTop: '12px',
+    border: '1px solid #334155',
+    borderRadius: '6px',
+    overflow: 'hidden' as const,
+  },
+  unifiedDiffHeader: {
+    padding: '8px 12px',
+    backgroundColor: '#1e293b',
+    color: '#cbd5e1',
+    fontSize: '12px',
+    fontWeight: 600,
+    borderBottom: '1px solid #334155',
+  },
+  unifiedDiffBody: {
+    backgroundColor: '#0b1220',
+    color: '#e2e8f0',
+    fontFamily: 'monospace',
+    fontSize: '12px',
+    maxHeight: '400px',
+    overflowY: 'auto' as const,
+    margin: 0 as const,
+    padding: '0',
+    lineHeight: 1.45 as const,
+  },
+  unifiedDiffHunkHeader: {
+    display: 'block',
+    backgroundColor: '#1e293b',
+    color: '#93c5fd',
+    padding: '4px 10px',
+    borderTop: '1px solid #334155',
+    borderBottom: '1px solid #334155',
+  },
+  unifiedDiffRow: {
+    display: 'grid',
+    gridTemplateColumns: '48px 48px 1fr',
+    columnGap: '8px',
+    padding: '0 10px',
+    alignItems: 'start',
+  },
+  unifiedDiffLineNo: {
+    color: '#64748b',
+    textAlign: 'right' as const,
+    userSelect: 'none' as const,
+  },
+  unifiedDiffLineText: {
+    whiteSpace: 'pre-wrap' as const,
+    wordBreak: 'break-word' as const,
+  },
+  unifiedDiffLineRemoved: {
+    display: 'block' as const,
+    color: '#fca5a5',
+    backgroundColor: '#2a1515',
+  },
+  unifiedDiffLineAdded: {
+    display: 'block' as const,
+    color: '#86efac',
+    backgroundColor: '#152a1a',
+  },
+  unifiedDiffLineContext: {
+    display: 'block' as const,
+    color: '#94a3b8',
+  },
   diffToggle: {
     display: 'flex',
     alignItems: 'center',
@@ -253,22 +316,7 @@ function renderEditInput(input: Record<string, unknown>) {
         {filePath || '(no file path)'}
       </div>
       {(oldString || newString) ? (
-        <div style={{ marginTop: '12px' }}>
-          {oldString !== undefined && (
-            <CollapsibleDiff
-              title="Old Text"
-              content={oldString}
-              variant="old"
-            />
-          )}
-          {newString !== undefined && (
-            <CollapsibleDiff
-              title="New Text"
-              content={newString}
-              variant="new"
-            />
-          )}
-        </div>
+        <UnifiedDiff oldText={oldString || ''} newText={newString || ''} />
       ) : (
         <div style={{ ...styles.codeBlock, marginTop: '8px' }}>
           {JSON.stringify(input, null, 2)}
@@ -308,6 +356,192 @@ function CollapsibleDiff({ title, content, variant }: CollapsibleDiffProps) {
         <pre style={{ ...styles.diffContent, ...contentStyle }}>
           {truncatedContent}
         </pre>
+      )}
+    </div>
+  );
+}
+
+type DiffLine = {
+  type: 'context' | 'remove' | 'add';
+  text: string;
+  oldLine?: number;
+  newLine?: number;
+};
+
+type DiffHunk = {
+  header: string;
+  lines: DiffLine[];
+};
+
+function buildDiffHunks(oldText: string, newText: string, contextLines = 3): DiffHunk[] {
+  const oldLines = oldText.split('\n');
+  const newLines = newText.split('\n');
+
+  const n = oldLines.length;
+  const m = newLines.length;
+
+  // LCS table (real line diff, not just prefix/suffix)
+  const dp: number[][] = Array.from({ length: n + 1 }, () => Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i -= 1) {
+    for (let j = m - 1; j >= 0; j -= 1) {
+      if (oldLines[i] === newLines[j]) {
+        dp[i][j] = dp[i + 1][j + 1] + 1;
+      } else {
+        dp[i][j] = Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+  }
+
+  // Build diff ops from LCS walk
+  const ops: Array<{ type: 'context' | 'remove' | 'add'; text: string }> = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (oldLines[i] === newLines[j]) {
+      ops.push({ type: 'context', text: oldLines[i] });
+      i += 1;
+      j += 1;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      ops.push({ type: 'remove', text: oldLines[i] });
+      i += 1;
+    } else {
+      ops.push({ type: 'add', text: newLines[j] });
+      j += 1;
+    }
+  }
+  while (i < n) {
+    ops.push({ type: 'remove', text: oldLines[i] });
+    i += 1;
+  }
+  while (j < m) {
+    ops.push({ type: 'add', text: newLines[j] });
+    j += 1;
+  }
+
+  const changeIndexes: number[] = [];
+  for (let k = 0; k < ops.length; k += 1) {
+    if (ops[k].type !== 'context') changeIndexes.push(k);
+  }
+  if (changeIndexes.length === 0) return [];
+
+  // Track line numbers at each op index (before applying op)
+  const oldBefore: number[] = Array(ops.length + 1).fill(0);
+  const newBefore: number[] = Array(ops.length + 1).fill(0);
+  let oldCount = 0;
+  let newCount = 0;
+  for (let k = 0; k < ops.length; k += 1) {
+    oldBefore[k] = oldCount;
+    newBefore[k] = newCount;
+    if (ops[k].type !== 'add') oldCount += 1;
+    if (ops[k].type !== 'remove') newCount += 1;
+  }
+  oldBefore[ops.length] = oldCount;
+  newBefore[ops.length] = newCount;
+
+  // Build merged hunk ranges with context
+  const ranges: Array<{ start: number; end: number }> = [];
+  let rangeStart = Math.max(0, changeIndexes[0] - contextLines);
+  let rangeEnd = Math.min(ops.length - 1, changeIndexes[0] + contextLines);
+  for (let c = 1; c < changeIndexes.length; c += 1) {
+    const idx = changeIndexes[c];
+    const nextStart = Math.max(0, idx - contextLines);
+    const nextEnd = Math.min(ops.length - 1, idx + contextLines);
+    if (nextStart <= rangeEnd + 1) {
+      rangeEnd = Math.max(rangeEnd, nextEnd);
+    } else {
+      ranges.push({ start: rangeStart, end: rangeEnd });
+      rangeStart = nextStart;
+      rangeEnd = nextEnd;
+    }
+  }
+  ranges.push({ start: rangeStart, end: rangeEnd });
+
+  // Convert ranges to display hunks with line numbers
+  return ranges.map(({ start, end }) => {
+    const hunkOps = ops.slice(start, end + 1);
+
+    const oldStartBase = oldBefore[start];
+    const newStartBase = newBefore[start];
+
+    let oldLen = 0;
+    let newLen = 0;
+    for (const op of hunkOps) {
+      if (op.type !== 'add') oldLen += 1;
+      if (op.type !== 'remove') newLen += 1;
+    }
+
+    const oldStart = oldLen === 0 ? oldStartBase : oldStartBase + 1;
+    const newStart = newLen === 0 ? newStartBase : newStartBase + 1;
+
+    let oldLineCursor = oldStartBase;
+    let newLineCursor = newStartBase;
+
+    const lines: DiffLine[] = hunkOps.map((op) => {
+      if (op.type === 'context') {
+        oldLineCursor += 1;
+        newLineCursor += 1;
+        return { type: 'context', text: op.text, oldLine: oldLineCursor, newLine: newLineCursor };
+      }
+      if (op.type === 'remove') {
+        oldLineCursor += 1;
+        return { type: 'remove', text: op.text, oldLine: oldLineCursor };
+      }
+      newLineCursor += 1;
+      return { type: 'add', text: op.text, newLine: newLineCursor };
+    });
+
+    return {
+      header: `@@ -${oldStart},${oldLen} +${newStart},${newLen} @@`,
+      lines,
+    };
+  });
+}
+
+function UnifiedDiff({ oldText, newText }: { oldText: string; newText: string }) {
+  const [expanded, setExpanded] = useState(true);
+  const hunks = buildDiffHunks(oldText, newText);
+  const hasChanges = oldText !== newText;
+
+  return (
+    <div style={styles.unifiedDiffBlock}>
+      <button
+        style={{ ...styles.diffToggle, ...styles.unifiedDiffHeader, borderRadius: expanded ? '0' : '6px' }}
+        onClick={() => setExpanded(!expanded)}
+      >
+        <span style={styles.diffToggleIcon}>{expanded ? '\u25BC' : '\u25B6'}</span>
+        Diff {!hasChanges ? '(no changes)' : ''}
+      </button>
+      {expanded && (
+        <div style={styles.unifiedDiffBody}>
+          {hasChanges ? hunks.map((hunk, hunkIdx) => (
+            <React.Fragment key={hunkIdx}>
+              <span style={styles.unifiedDiffHunkHeader}>{hunk.header}</span>
+              {hunk.lines.map((line, lineIdx) => {
+                const rowStyle = line.type === 'remove'
+                  ? styles.unifiedDiffLineRemoved
+                  : line.type === 'add'
+                    ? styles.unifiedDiffLineAdded
+                    : styles.unifiedDiffLineContext;
+                return (
+                  <div key={`${hunkIdx}-${lineIdx}`} style={{ ...styles.unifiedDiffRow, ...rowStyle }}>
+                    <span style={styles.unifiedDiffLineNo}>{line.oldLine ?? ''}</span>
+                    <span style={styles.unifiedDiffLineNo}>{line.newLine ?? ''}</span>
+                    <span style={styles.unifiedDiffLineText}>
+                      {line.type === 'remove' ? '-' : line.type === 'add' ? '+' : ' '}
+                      {line.text}
+                    </span>
+                  </div>
+                );
+              })}
+            </React.Fragment>
+          )) : (
+            <div style={{ ...styles.unifiedDiffRow, ...styles.unifiedDiffLineContext }}>
+              <span style={styles.unifiedDiffLineNo}></span>
+              <span style={styles.unifiedDiffLineNo}></span>
+              <span style={styles.unifiedDiffLineText}>No changes detected</span>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
