@@ -810,6 +810,7 @@ export async function parseSessionFile(filePath: string, indexEntry?: SessionInd
       hasClearPrefix,
       createdAt: indexEntry?.created ? new Date(indexEntry.created).getTime() : metadata.firstTimestamp,
       lastActivity: metadata.lastTimestamp,
+      tokenUsage: metadata.tokenUsage,
       nodes,
       subagents: [], // Will be populated by discoverSubagents
     };
@@ -862,6 +863,7 @@ export async function discoverSubagents(session: Session, sessionJsonlPath: stri
         cwd: session.cwd,
         createdAt: metadata.firstTimestamp,
         lastActivity: metadata.lastTimestamp,
+        tokenUsage: metadata.tokenUsage,
         nodes,
         subagents: [], // Nested subagents not currently supported
       };

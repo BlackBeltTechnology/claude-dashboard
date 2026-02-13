@@ -17,6 +17,7 @@ import {
   getDebugLogMtime,
   isSessionClosed,
   hasIdlePromptMarker,
+  buildNodes,
 } from './session-discovery.js';
 import { parseJSONL, extractMetadata, type ParsedEntry } from './jsonl-parser.js';
 import { readFile } from 'fs/promises';
@@ -26,6 +27,9 @@ const DEBOUNCE_MS = 100;
 
 // State polling interval in milliseconds
 const STATE_POLL_INTERVAL_MS = 2000;
+
+// Keep recently edited sessions in active state briefly to prevent UI flicker
+const STICKY_ACTIVE_MS = 60000;
 
 // Events emitted by SessionManager
 export interface SessionManagerEvents {
@@ -102,6 +106,11 @@ export class SessionManager extends EventEmitter {
    * Once idle_prompt is detected, it stays cached until the session closes.
    */
   private idlePromptSessions: Set<string> = new Set();
+  /**
+   * Sessions recently changed by JSONL edits should stay active briefly
+   * to avoid rapid active->idle/waiting transitions causing UI glitches.
+   */
+  private stickyActiveUntil: Map<string, number> = new Map();
   private statePollingInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(claudeDir: string) {
@@ -181,6 +190,7 @@ export class SessionManager extends EventEmitter {
     this.sessionJsonlPaths.clear();
     this.closedSessions.clear();
     this.idlePromptSessions.clear();
+    this.stickyActiveUntil.clear();
     this.isInitialized = false;
     console.log('[SessionManager] Stopped');
   }
@@ -245,6 +255,9 @@ export class SessionManager extends EventEmitter {
 
     // Track JSONL path for polling
     this.sessionJsonlPaths.set(filename, path);
+
+    // Mark this session as recently edited to stabilize active status in UI
+    this.stickyActiveUntil.set(filename, Date.now() + STICKY_ACTIVE_MS);
 
     // Update cache
     this.sessions.set(filename, session);
@@ -319,7 +332,8 @@ export class SessionManager extends EventEmitter {
         gitBranch: parentSession.gitBranch,
         createdAt: metadata.firstTimestamp,
         lastActivity: metadata.lastTimestamp,
-        nodes: [], // Simplified - could build full nodes if needed
+        tokenUsage: metadata.tokenUsage,
+        nodes: buildNodes(entries),
         subagents: [],
       };
 
@@ -335,6 +349,9 @@ export class SessionManager extends EventEmitter {
       if (metadata.lastTimestamp > parentSession.lastActivity) {
         parentSession.lastActivity = metadata.lastTimestamp;
       }
+
+      // Subagent activity should also keep the parent session visibly active for a short grace period
+      this.stickyActiveUntil.set(sessionId, Date.now() + STICKY_ACTIVE_MS);
 
       // Update state tracking and emit state-change if changed
       this.updateStateAndEmit(sessionId, agentId, state, parentSession);
@@ -375,6 +392,8 @@ export class SessionManager extends EventEmitter {
    * (e.g., a session going from active to waiting due to inactivity).
    */
   private async pollStates(): Promise<void> {
+    const now = Date.now();
+
     for (const [sessionId, session] of this.sessions) {
       try {
         // Get the debug log mtime for this session
@@ -417,7 +436,16 @@ export class SessionManager extends EventEmitter {
         }
 
         // Recompute session state using debug log mtime, closed status, and idle_prompt
-        const newState = determineSessionState(entries, debugMtime, lastTimestamp, closed, idlePrompt);
+        let newState = determineSessionState(entries, debugMtime, lastTimestamp, closed, idlePrompt);
+
+        // Sticky-active override for recently edited sessions.
+        // Do not override completed sessions.
+        const keepActiveUntil = this.stickyActiveUntil.get(sessionId) ?? 0;
+        if (keepActiveUntil > now && (newState === 'idle' || newState === 'waiting')) {
+          newState = 'active';
+        } else if (keepActiveUntil <= now && keepActiveUntil > 0) {
+          this.stickyActiveUntil.delete(sessionId);
+        }
 
         // Update session state in cache
         if (session.state !== newState) {

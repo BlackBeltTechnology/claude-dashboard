@@ -1,4 +1,4 @@
-import React, { useMemo, useCallback, useEffect } from 'react';
+import React, { useMemo, useCallback, useEffect, useRef } from 'react';
 import {
   ReactFlow,
   MiniMap,
@@ -10,6 +10,7 @@ import {
   useReactFlow,
   type NodeTypes,
   type Node,
+  type Edge,
   type NodeMouseHandler,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -74,12 +75,153 @@ const defaultEdgeOptions = {
 
 const proOptions = { hideAttribution: true };
 
+function stableStringifyWithoutFunctions(value: unknown): string {
+  const seen = new WeakSet<object>();
+  return JSON.stringify(value, (_key, val) => {
+    if (typeof val === 'function') return '__fn__';
+    if (val && typeof val === 'object') {
+      if (seen.has(val as object)) return '__cycle__';
+      seen.add(val as object);
+    }
+    return val;
+  }) || '';
+}
+
+function nodeSignature(node: Node): string {
+  return [
+    node.type,
+    node.parentId || '',
+    node.position.x,
+    node.position.y,
+    stableStringifyWithoutFunctions(node.data),
+  ].join('|');
+}
+
+function edgeSignature(edge: Edge): string {
+  return [
+    edge.source,
+    edge.target,
+    edge.type || '',
+    edge.animated ? '1' : '0',
+    stableStringifyWithoutFunctions(edge.style || {}),
+  ].join('|');
+}
+
 // Helper component to handle tree-to-graph focus synchronization
 // Must be child of ReactFlow to use useReactFlow hook
 function GraphFocusHandler() {
-  const { fitView, getNodes } = useReactFlow();
+  const { fitView, getNodes, getEdges, getZoom, setCenter } = useReactFlow();
   const focusedNodeId = useSessionStore((state) => state.focusedNodeId);
   const jumpToEndTrigger = useSessionStore((state) => state.jumpToEndTrigger);
+  const followPipelineEnd = useSessionStore((state) => state.followPipelineEnd);
+  const lastFollowedNodeIdRef = useRef<string | null>(null);
+  const lastFollowedPosRef = useRef<{ x: number; y: number } | null>(null);
+  const didInitialFitRef = useRef(false);
+
+  const getRightmostByGeometry = useCallback((nodes: Node[], nodeMap: Map<string, Node>): Node | null => {
+    if (nodes.length === 0) return null;
+
+    const getAbsPos = (node: Node): { x: number; y: number } => {
+      let x = node.position.x;
+      let y = node.position.y;
+      let parentId = node.parentId;
+      while (parentId) {
+        const parent = nodeMap.get(parentId);
+        if (!parent) break;
+        x += parent.position.x;
+        y += parent.position.y;
+        parentId = parent.parentId;
+      }
+      return { x, y };
+    };
+
+    const rightEdge = (node: Node): number => {
+      const p = getAbsPos(node);
+      const w = node.measured?.width ?? node.width ?? 0;
+      return p.x + w;
+    };
+
+    return nodes.reduce((best, n) => {
+      const nr = rightEdge(n);
+      const br = rightEdge(best);
+      if (nr !== br) return nr > br ? n : best;
+      return n.position.y > best.position.y ? n : best;
+    });
+  }, []);
+
+  const getEndTargetNodeId = useCallback((): string | null => {
+    const allNodes = getNodes();
+    if (allNodes.length === 0) return null;
+    const allEdges = getEdges();
+    const nodeMap = new Map(allNodes.map((n) => [n.id, n]));
+
+    // Ignore structural helper nodes from end targeting.
+    const nonStructural = allNodes.filter((n) => n.type !== 'session' && n.type !== 'join-node');
+    if (nonStructural.length === 0) return allNodes[0]?.id ?? null;
+
+    // Prefer sink nodes (no outgoing edges) to identify true tail in current graph.
+    const outgoing = new Set(allEdges.map((e) => e.source));
+    const sinkNodes = nonStructural.filter((n) => !outgoing.has(n.id));
+    const candidateNodes = sinkNodes.length > 0 ? sinkNodes : nonStructural;
+
+    // Primary tail from top-level timeline nodes, based on right-edge geometry.
+    const topLevel = candidateNodes.filter((n) => !n.parentId);
+    const tailTop = getRightmostByGeometry(topLevel.length > 0 ? topLevel : candidateNodes, nodeMap);
+    if (!tailTop) return null;
+
+    // If primary tail is expanded subagent-box, jump to last internal node inside it.
+    if (tailTop.type === 'subagent-box' && (tailTop.data as any)?.isExpanded) {
+      const internalChildren = candidateNodes.filter((n) => n.parentId === tailTop.id);
+      const fallbackChildren = allNodes.filter((n) => n.parentId === tailTop.id);
+      const tailInternal = getRightmostByGeometry(
+        internalChildren.length > 0 ? internalChildren : fallbackChildren,
+        nodeMap
+      );
+      if (tailInternal) {
+        return tailInternal.id;
+      }
+    }
+
+    return tailTop.id;
+  }, [getNodes, getEdges, getRightmostByGeometry]);
+
+  const focusNodeById = useCallback((nodeId: string, xOffset = 0, duration = 220) => {
+    const allNodes = getNodes();
+    const nodeMap = new Map(allNodes.map((n) => [n.id, n]));
+    const target = nodeMap.get(nodeId);
+    if (!target) return;
+
+    let absX = target.position.x;
+    let absY = target.position.y;
+    let parentId = target.parentId;
+    while (parentId) {
+      const parent = nodeMap.get(parentId);
+      if (!parent) break;
+      absX += parent.position.x;
+      absY += parent.position.y;
+      parentId = parent.parentId;
+    }
+
+    const width = target.measured?.width ?? target.width ?? 0;
+    const height = target.measured?.height ?? target.height ?? 0;
+    const centerX = absX + width / 2;
+    const centerY = absY + height / 2;
+
+    // Preserve current zoom to avoid zoom-out / zoom-in jitter.
+    setCenter(centerX + xOffset, centerY, {
+      zoom: getZoom(),
+      duration,
+    });
+
+    lastFollowedPosRef.current = { x: centerX + xOffset, y: centerY };
+  }, [getNodes, getZoom, setCenter]);
+
+  const focusRightmostNode = useCallback(() => {
+    const nodeId = getEndTargetNodeId();
+    if (!nodeId) return;
+    focusNodeById(nodeId);
+    lastFollowedNodeIdRef.current = nodeId;
+  }, [getEndTargetNodeId, focusNodeById]);
 
   useEffect(() => {
     if (focusedNodeId) {
@@ -95,24 +237,76 @@ function GraphFocusHandler() {
     }
   }, [focusedNodeId, fitView]);
 
+  // Initial one-time fit for first render only (no repeated auto-fit on updates).
+  useEffect(() => {
+    if (didInitialFitRef.current) return;
+    const timer = setTimeout(() => {
+      if (getNodes().length === 0) return;
+      fitView({ padding: 0.2, duration: 250 });
+      didInitialFitRef.current = true;
+    }, 120);
+    return () => clearTimeout(timer);
+  }, [fitView, getNodes]);
+
   useEffect(() => {
     if (jumpToEndTrigger > 0) {
-      const timer = setTimeout(() => {
-        const allNodes = getNodes().filter((n) => !n.parentId);
-        if (allNodes.length === 0) return;
-        // Find rightmost node (highest x position = last in LR layout)
-        const lastNode = allNodes.reduce((best, n) =>
-          n.position.x > best.position.x ? n : best
-        );
-        fitView({
-          nodes: [{ id: lastNode.id }],
-          duration: 300,
-          padding: 0.3,
-        });
-      }, 100);
+      const timer = setTimeout(() => focusRightmostNode(), 180);
       return () => clearTimeout(timer);
     }
-  }, [jumpToEndTrigger, fitView, getNodes]);
+  }, [jumpToEndTrigger, focusRightmostNode]);
+
+  // Follow mode: keep jumping to latest rightmost node as pipeline grows
+  useEffect(() => {
+    if (!followPipelineEnd) return;
+
+    // Initial focus when follow is turned on
+    const initialTimer = setTimeout(() => {
+      const nodeId = getEndTargetNodeId();
+      if (!nodeId) return;
+      focusNodeById(nodeId, 8, 140);
+      lastFollowedNodeIdRef.current = nodeId;
+    }, 120);
+
+    // Poll for newly appended pipeline nodes and follow the true end target.
+    const interval = setInterval(() => {
+      const targetId = getEndTargetNodeId();
+      if (!targetId) return;
+
+      const allNodes = getNodes();
+      const nodeMap = new Map(allNodes.map((n) => [n.id, n]));
+      const targetNode = nodeMap.get(targetId);
+
+      let center: { x: number; y: number } | null = null;
+      if (targetNode) {
+        let ax = targetNode.position.x;
+        let ay = targetNode.position.y;
+        let pId = targetNode.parentId;
+        while (pId) {
+          const p = nodeMap.get(pId);
+          if (!p) break;
+          ax += p.position.x;
+          ay += p.position.y;
+          pId = p.parentId;
+        }
+        const width = targetNode.measured?.width ?? targetNode.width ?? 0;
+        const height = targetNode.measured?.height ?? targetNode.height ?? 0;
+        center = { x: ax + width / 2 + 8, y: ay + height / 2 };
+      }
+
+      const prev = lastFollowedPosRef.current;
+      const moved = !!(center && prev && (Math.abs(center.x - prev.x) > 2 || Math.abs(center.y - prev.y) > 2));
+
+      if (lastFollowedNodeIdRef.current !== targetId || moved) {
+        focusNodeById(targetId, 8, 140);
+        lastFollowedNodeIdRef.current = targetId;
+      }
+    }, 650);
+
+    return () => {
+      clearTimeout(initialTimer);
+      clearInterval(interval);
+    };
+  }, [followPipelineEnd, getEndTargetNodeId, focusNodeById]);
 
   return null;
 }
@@ -275,13 +469,33 @@ export function GraphView() {
     });
   }, [layoutedNodes, sessions, setSelectedNodeData, selectedSessionId, toggleSubagentBox]);
 
-  const [nodes, setNodes, onNodesChange] = useNodesState(enrichedNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(layoutedEdges);
+  const [nodes, setNodes] = useNodesState(enrichedNodes);
+  const [edges, setEdges] = useEdgesState(layoutedEdges);
 
-  // Update nodes/edges when session data changes
-  React.useEffect(() => {
-    setNodes(enrichedNodes);
-    setEdges(layoutedEdges);
+  // Reconcile nodes/edges to keep stable object identity for unchanged IDs.
+  // This avoids visible reload/flicker in expanded subagent internals.
+  useEffect(() => {
+    setNodes((prev) => {
+      const prevMap = new Map(prev.map((n) => [n.id, n]));
+      return enrichedNodes.map((nextNode) => {
+        const prevNode = prevMap.get(nextNode.id);
+        if (!prevNode) return nextNode;
+        return nodeSignature(prevNode as Node) === nodeSignature(nextNode as Node)
+          ? prevNode
+          : nextNode;
+      });
+    });
+
+    setEdges((prev) => {
+      const prevMap = new Map(prev.map((e) => [e.id, e]));
+      return layoutedEdges.map((nextEdge) => {
+        const prevEdge = prevMap.get(nextEdge.id);
+        if (!prevEdge) return nextEdge;
+        return edgeSignature(prevEdge as Edge) === edgeSignature(nextEdge as Edge)
+          ? prevEdge
+          : nextEdge;
+      });
+    });
   }, [enrichedNodes, layoutedEdges, setNodes, setEdges]);
 
   // Helper function to find a tool node in sessions by React Flow node ID
@@ -628,14 +842,10 @@ export function GraphView() {
       <ReactFlow
         nodes={nodes}
         edges={edges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
         onNodeClick={onNodeClick}
         nodeTypes={nodeTypes}
         defaultEdgeOptions={defaultEdgeOptions}
         proOptions={proOptions}
-        fitView
-        fitViewOptions={{ padding: 0.2 }}
         minZoom={0.1}
         maxZoom={2}
       >

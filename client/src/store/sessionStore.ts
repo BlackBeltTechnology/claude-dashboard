@@ -35,6 +35,7 @@ interface SessionStore {
   treePanelOpen: boolean;
   focusedNodeId: string | null;
   jumpToEndTrigger: number;
+  followPipelineEnd: boolean;
   currentDirectoryCwd: string | null;
 
   // Filter / search state
@@ -107,6 +108,7 @@ interface SessionStore {
   toggleTreePanel: () => void;
   setFocusedNode: (nodeId: string | null) => void;
   jumpToEnd: () => void;
+  setFollowPipelineEnd: (enabled: boolean) => void;
 
   // Selectors
   getFilteredSessions: () => Session[];
@@ -237,6 +239,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   treePanelOpen: false,
   focusedNodeId: null,
   jumpToEndTrigger: 0,
+  followPipelineEnd: false,
   currentDirectoryCwd: null,
   filter: 'all',
   searchTerm: '',
@@ -449,6 +452,10 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
 
   jumpToEnd: () => {
     set((state) => ({ jumpToEndTrigger: state.jumpToEndTrigger + 1 }));
+  },
+
+  setFollowPipelineEnd: (enabled: boolean) => {
+    set({ followPipelineEnd: enabled });
   },
 
   getFilteredSessions: () => {

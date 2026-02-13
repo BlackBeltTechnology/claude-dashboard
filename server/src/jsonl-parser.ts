@@ -30,6 +30,12 @@ export interface RawMessage {
   content: string | RawContentBlock[];
   model?: string;
   id?: string;  // API message ID (e.g., msg_xxx) - same for all tool_use blocks in one turn
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+  };
 }
 
 export interface RawContentBlock {
@@ -88,6 +94,13 @@ export interface ParsedEntry {
   summary?: string;
   messageId?: string;  // API message ID for parallel tool call detection
   hookProgress?: HookProgressEntry;  // Hook execution metadata
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationInputTokens: number;
+    cacheReadInputTokens: number;
+    totalTokens: number;
+  };
 }
 
 /**
@@ -124,6 +137,20 @@ export function parseLine(line: string): ParsedEntry | null {
       parsed.role = raw.message.role;
       if (raw.message.id) {
         parsed.messageId = raw.message.id;
+      }
+
+      if (raw.message.usage) {
+        const inputTokens = Number(raw.message.usage.input_tokens || 0);
+        const outputTokens = Number(raw.message.usage.output_tokens || 0);
+        const cacheCreationInputTokens = Number(raw.message.usage.cache_creation_input_tokens || 0);
+        const cacheReadInputTokens = Number(raw.message.usage.cache_read_input_tokens || 0);
+        parsed.usage = {
+          inputTokens,
+          outputTokens,
+          cacheCreationInputTokens,
+          cacheReadInputTokens,
+          totalTokens: inputTokens + outputTokens + cacheCreationInputTokens + cacheReadInputTokens,
+        };
       }
 
       if (typeof raw.message.content === 'string') {
@@ -255,6 +282,13 @@ export interface SessionMetadata {
   summary?: string;
   messageCount: number;
   hasSubagents: boolean;
+  tokenUsage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationInputTokens: number;
+    cacheReadInputTokens: number;
+    totalTokens: number;
+  };
 }
 
 export function extractMetadata(entries: ParsedEntry[], sessionId: string): SessionMetadata {
@@ -265,6 +299,10 @@ export function extractMetadata(entries: ParsedEntry[], sessionId: string): Sess
   let summary: string | undefined;
   let messageCount = 0;
   let hasSubagents = false;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheCreationInputTokens = 0;
+  let cacheReadInputTokens = 0;
 
   for (const entry of entries) {
     if (entry.timestamp < firstTimestamp) {
@@ -298,6 +336,13 @@ export function extractMetadata(entries: ParsedEntry[], sessionId: string): Sess
         }
       }
     }
+
+    if (entry.usage) {
+      inputTokens += entry.usage.inputTokens;
+      outputTokens += entry.usage.outputTokens;
+      cacheCreationInputTokens += entry.usage.cacheCreationInputTokens;
+      cacheReadInputTokens += entry.usage.cacheReadInputTokens;
+    }
   }
 
   return {
@@ -309,5 +354,12 @@ export function extractMetadata(entries: ParsedEntry[], sessionId: string): Sess
     summary,
     messageCount,
     hasSubagents,
+    tokenUsage: {
+      inputTokens,
+      outputTokens,
+      cacheCreationInputTokens,
+      cacheReadInputTokens,
+      totalTokens: inputTokens + outputTokens + cacheCreationInputTokens + cacheReadInputTokens,
+    },
   };
 }

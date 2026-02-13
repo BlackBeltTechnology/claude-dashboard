@@ -276,6 +276,7 @@ export function convertSessionToGraph(
       tmuxTarget: session.tmuxTarget,
       subagentCount: session.subagents.length,
       nodeCount: session.nodes.length,
+      totalTokens: session.tokenUsage?.totalTokens,
     },
   };
 
@@ -928,82 +929,36 @@ export function convertSessionToGraph(
           // Sort chronologically
           timelineItems.sort((a, b) => a.timestamp - b.timestamp);
 
-          // Build internal nodes from chronological timeline, grouping consecutive same-type items in-place
-          let ti = 0;
-          while (ti < timelineItems.length) {
-            const item = timelineItems[ti];
-
+          // Build internal nodes chronologically (no regrouping while open)
+          // This keeps node IDs stable and appends new internal nodes gradually.
+          for (const item of timelineItems) {
             if (item.itemType === 'model') {
-              // Collect consecutive model outputs
-              const modelRun: TimelineItem[] = [item];
-              let mj = ti + 1;
-              while (mj < timelineItems.length && timelineItems[mj].itemType === 'model') {
-                modelRun.push(timelineItems[mj]);
-                mj++;
-              }
-              const isGroup = modelRun.length > 1;
-              const label = isGroup ? `Model Output (${modelRun.length})` : 'Model Output';
-              const firstMsgData = modelRun[0].data as AnyNode & { content?: string; state: SessionState };
-              const allNodeData = modelRun.map(m => m.data);
+              const modelData = item.data as AnyNode & { content?: string; state: SessionState };
               internalNodes.push({
-                id: isGroup ? `model-group-${modelRun[0].data.id}` : modelRun[0].data.id,
+                id: modelData.id,
                 type: 'model',
-                label,
-                content: firstMsgData.content || '',
-                state: firstMsgData.state,
-                nodeData: isGroup ? allNodeData : allNodeData[0],
-                count: isGroup ? modelRun.length : undefined,
+                label: 'Model Output',
+                content: modelData.content || '',
+                state: modelData.state,
+                nodeData: modelData,
               });
-              ti = mj;
-            } else if (item.itemType === 'tool') {
-              // Collect consecutive same-name tool calls
-              const toolData = item.data as AnyNode & { toolName: string; state: SessionState };
-              const currentName = toolData.toolName;
-              const toolRun: TimelineItem[] = [item];
-              let tj = ti + 1;
-              while (tj < timelineItems.length && timelineItems[tj].itemType === 'tool' &&
-                     (timelineItems[tj].data as AnyNode & { toolName: string }).toolName === currentName) {
-                toolRun.push(timelineItems[tj]);
-                tj++;
-              }
+              continue;
+            }
 
-              if (toolRun.length > 1) {
-                // Group of consecutive same-name tools
-                const firstTool = toolRun[0].data as AnyNode;
-                const toolNode = parallelSubagent.nodes.find(n => n.id === firstTool.id);
-                const groupHooks = toolRun.flatMap(t => {
-                  const n = parallelSubagent.nodes.find(nd => nd.id === t.data.id);
-                  return (n && 'hooks' in n && Array.isArray(n.hooks)) ? n.hooks : [];
-                });
-                internalNodes.push({
-                  id: `tool-group-${currentName}-${firstTool.id}`,
-                  type: 'tool',
-                  label: `${currentName} (${toolRun.length})`,
-                  toolName: currentName,
-                  inputSummary: '',
-                  state: toolRun.some(t => (t.data as AnyNode & { state: SessionState }).state === 'active') ? 'active' as SessionState : toolData.state,
-                  nodeData: toolNode || null,
-                  count: toolRun.length,
-                  ...(groupHooks.length > 0 ? { hooks: groupHooks } : {}),
-                });
-              } else {
-                // Single tool call
-                const toolNode = parallelSubagent.nodes.find(n => n.id === toolData.id);
-                const singleHooks = toolNode && 'hooks' in toolNode && Array.isArray(toolNode.hooks) ? toolNode.hooks : [];
-                internalNodes.push({
-                  id: toolData.id,
-                  type: 'tool',
-                  label: toolData.toolName,
-                  toolName: toolData.toolName,
-                  inputSummary: item.toolSummary?.inputSummary || '',
-                  state: toolData.state,
-                  nodeData: toolNode || null,
-                  ...(singleHooks.length > 0 ? { hooks: singleHooks } : {}),
-                });
-              }
-              ti = tj;
-            } else {
-              ti++;
+            if (item.itemType === 'tool') {
+              const toolData = item.data as AnyNode & { toolName: string; state: SessionState };
+              const toolNode = parallelSubagent.nodes.find(n => n.id === toolData.id);
+              const singleHooks = toolNode && 'hooks' in toolNode && Array.isArray(toolNode.hooks) ? toolNode.hooks : [];
+              internalNodes.push({
+                id: toolData.id,
+                type: 'tool',
+                label: toolData.toolName,
+                toolName: toolData.toolName,
+                inputSummary: item.toolSummary?.inputSummary || '',
+                state: toolData.state,
+                nodeData: toolNode || null,
+                ...(singleHooks.length > 0 ? { hooks: singleHooks } : {}),
+              });
             }
           }
 
@@ -1329,80 +1284,36 @@ export function convertSessionToGraph(
         // Sort chronologically
         timelineItems.sort((a, b) => a.timestamp - b.timestamp);
 
-        // Build internal nodes from chronological timeline, grouping consecutive same-type items in-place
-        let ti = 0;
-        while (ti < timelineItems.length) {
-          const item = timelineItems[ti];
-
+        // Build internal nodes chronologically (no regrouping while open)
+        // This keeps node IDs stable and appends new internal nodes gradually.
+        for (const item of timelineItems) {
           if (item.itemType === 'model') {
-            // Collect consecutive model outputs
-            const modelRun: TimelineItem[] = [item];
-            let mj = ti + 1;
-            while (mj < timelineItems.length && timelineItems[mj].itemType === 'model') {
-              modelRun.push(timelineItems[mj]);
-              mj++;
-            }
-            const isGroup = modelRun.length > 1;
-            const label = isGroup ? `Model Output (${modelRun.length})` : 'Model Output';
-            const firstMsgData = modelRun[0].data as AnyNode & { content?: string; state: SessionState };
-            const allNodeData = modelRun.map(m => m.data);
+            const modelData = item.data as AnyNode & { content?: string; state: SessionState };
             internalNodes.push({
-              id: isGroup ? `model-group-${modelRun[0].data.id}` : modelRun[0].data.id,
+              id: modelData.id,
               type: 'model',
-              label,
-              content: firstMsgData.content || '',
-              state: firstMsgData.state,
-              nodeData: isGroup ? allNodeData : allNodeData[0],
-              count: isGroup ? modelRun.length : undefined,
+              label: 'Model Output',
+              content: modelData.content || '',
+              state: modelData.state,
+              nodeData: modelData,
             });
-            ti = mj;
-          } else if (item.itemType === 'tool') {
-            // Collect consecutive same-name tool calls
-            const toolData = item.data as AnyNode & { toolName: string; state: SessionState };
-            const currentName = toolData.toolName;
-            const toolRun: TimelineItem[] = [item];
-            let tj = ti + 1;
-            while (tj < timelineItems.length && timelineItems[tj].itemType === 'tool' &&
-                   (timelineItems[tj].data as AnyNode & { toolName: string }).toolName === currentName) {
-              toolRun.push(timelineItems[tj]);
-              tj++;
-            }
+            continue;
+          }
 
-            if (toolRun.length > 1) {
-              const firstTool = toolRun[0].data as AnyNode;
-              const toolNode = subagent.nodes.find(n => n.id === firstTool.id);
-              const groupHooks = toolRun.flatMap(t => {
-                const n = subagent.nodes.find(nd => nd.id === t.data.id);
-                return (n && 'hooks' in n && Array.isArray(n.hooks)) ? n.hooks : [];
-              });
-              internalNodes.push({
-                id: `tool-group-${currentName}-${firstTool.id}`,
-                type: 'tool',
-                label: `${currentName} (${toolRun.length})`,
-                toolName: currentName,
-                inputSummary: '',
-                state: toolRun.some(t => (t.data as AnyNode & { state: SessionState }).state === 'active') ? 'active' as SessionState : toolData.state,
-                nodeData: toolNode || null,
-                count: toolRun.length,
-                ...(groupHooks.length > 0 ? { hooks: groupHooks } : {}),
-              });
-            } else {
-              const toolNode = subagent.nodes.find(n => n.id === toolData.id);
-              const singleHooks = toolNode && 'hooks' in toolNode && Array.isArray(toolNode.hooks) ? toolNode.hooks : [];
-              internalNodes.push({
-                id: toolData.id,
-                type: 'tool',
-                label: toolData.toolName,
-                toolName: toolData.toolName,
-                inputSummary: item.toolSummary?.inputSummary || '',
-                state: toolData.state,
-                nodeData: toolNode || null,
-                ...(singleHooks.length > 0 ? { hooks: singleHooks } : {}),
-              });
-            }
-            ti = tj;
-          } else {
-            ti++;
+          if (item.itemType === 'tool') {
+            const toolData = item.data as AnyNode & { toolName: string; state: SessionState };
+            const toolNode = subagent.nodes.find(n => n.id === toolData.id);
+            const singleHooks = toolNode && 'hooks' in toolNode && Array.isArray(toolNode.hooks) ? toolNode.hooks : [];
+            internalNodes.push({
+              id: toolData.id,
+              type: 'tool',
+              label: toolData.toolName,
+              toolName: toolData.toolName,
+              inputSummary: item.toolSummary?.inputSummary || '',
+              state: toolData.state,
+              nodeData: toolNode || null,
+              ...(singleHooks.length > 0 ? { hooks: singleHooks } : {}),
+            });
           }
         }
 

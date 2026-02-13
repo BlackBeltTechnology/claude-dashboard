@@ -23,7 +23,7 @@ export interface DirectoryGraphData {
 
 // Node dimensions for layout
 const NODE_DIMENSIONS = {
-  directory: { width: 190, height: 80 },
+  directory: { width: 220, height: 95 },
   session: { width: 200, height: 100 },
 };
 
@@ -75,6 +75,7 @@ export function createDirectoryOverviewGraph(
       data: {
         label: displayName,
         sessionCount: cwdSessions.length,
+        totalTokens: cwdSessions.reduce((acc, s) => acc + (s.tokenUsage?.totalTokens || 0), 0),
         cwd,
         isExpanded: expandedDirectories.has(cwd),
       },
@@ -102,6 +103,7 @@ export function createDirectoryOverviewGraph(
           tmuxTarget: session.tmuxTarget,
           subagentCount: session.subagents.length,
           nodeCount: session.nodes.length,
+          totalTokens: session.tokenUsage?.totalTokens,
           sessionId: session.id,
           lastCommand: session.lastUserPrompt && session.lastUserPrompt !== session.firstUserPrompt
             ? (session.lastUserPrompt.length > 50 ? session.lastUserPrompt.slice(0, 50) + '...' : session.lastUserPrompt)

@@ -14,6 +14,7 @@ export interface SessionNodeData {
   lastCommand?: string;
   hasClearPrefix?: boolean;
   lastActivity?: number;  // Timestamp in ms for relative time display
+  totalTokens?: number;
   [key: string]: unknown;
 }
 
@@ -127,6 +128,12 @@ function formatRelativeTime(timestamp: number): string {
   return `${Math.floor(seconds / 86400)}d ago`;
 }
 
+function formatTokenCount(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}k`;
+  return `${tokens}`;
+}
+
 function SessionNodeComponent({ data, selected }: NodeProps<SessionNodeType>) {
   const colors = STATUS_COLORS[data.state] ?? DEFAULT_STATUS_COLORS;
 
@@ -203,6 +210,14 @@ function SessionNodeComponent({ data, selected }: NodeProps<SessionNodeType>) {
             </svg>
             {data.subagentCount} agents
           </span>
+          {typeof data.totalTokens === 'number' && (
+            <span style={styles.stat} title={`${data.totalTokens.toLocaleString()} total tokens`}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 2l2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 16.8 6.4 19.2l1.1-6.2L3 8.6l6.2-.9L12 2z" />
+              </svg>
+              {formatTokenCount(data.totalTokens)} tok
+            </span>
+          )}
         </div>
       </div>
       <Handle

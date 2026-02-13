@@ -4,6 +4,7 @@ import { Handle, Position, type NodeProps, type Node } from '@xyflow/react';
 export interface DirectoryNodeData {
   label: string;
   sessionCount: number;
+  totalTokens?: number;
   cwd: string;
   isExpanded?: boolean;
   [key: string]: unknown;
@@ -59,6 +60,11 @@ const styles = {
     color: '#9ca3af',
     marginTop: '4px',
   },
+  tokens: {
+    fontSize: '12px',
+    color: '#6ee7b7',
+    marginTop: '4px',
+  },
   hint: {
     fontSize: '11px',
     color: '#6b7280',
@@ -74,6 +80,11 @@ const styles = {
 
 function DirectoryNodeComponent({ data, selected }: NodeProps<DirectoryNodeType>) {
   const expanded = Boolean(data.isExpanded);
+  const formatTokenCount = (tokens: number) => {
+    if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+    if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}k`;
+    return `${tokens}`;
+  };
 
   return (
     <>
@@ -100,6 +111,11 @@ function DirectoryNodeComponent({ data, selected }: NodeProps<DirectoryNodeType>
         <div style={styles.count}>
           {data.sessionCount} {data.sessionCount === 1 ? 'session' : 'sessions'}
         </div>
+        {typeof data.totalTokens === 'number' && (
+          <div style={styles.tokens} title={`${data.totalTokens.toLocaleString()} total tokens`}>
+            {formatTokenCount(data.totalTokens)} tok
+          </div>
+        )}
         <div style={styles.hint}>
           {expanded ? 'Click to collapse' : 'Click to expand'}
         </div>

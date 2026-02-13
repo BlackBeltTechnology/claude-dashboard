@@ -130,6 +130,13 @@ export interface Session {
   lastUserPrompt?: string;
   hasClearPrefix?: boolean;
   tmuxTarget?: string;
+  tokenUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationInputTokens: number;
+    cacheReadInputTokens: number;
+    totalTokens: number;
+  };
   createdAt: number;
   lastActivity: number;
   nodes: AnyNode[];
