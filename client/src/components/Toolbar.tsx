@@ -149,7 +149,6 @@ const styles = {
     gap: '8px',
     marginTop: '10px',
     paddingTop: '10px',
-    borderLeft: '1px solid #0f3460',
     borderTop: '1px solid #0f3460',
     borderLeft: 'none',
     marginLeft: 0,
