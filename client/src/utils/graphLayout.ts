@@ -929,11 +929,16 @@ export function convertSessionToGraph(
           // Sort chronologically
           timelineItems.sort((a, b) => a.timestamp - b.timestamp);
 
-          // Build internal nodes chronologically (no regrouping while open)
-          // This keeps node IDs stable and appends new internal nodes gradually.
-          for (const item of timelineItems) {
-            if (item.itemType === 'model') {
-              const modelData = item.data as AnyNode & { content?: string; state: SessionState };
+          // Group consecutive tool calls (matching main graph logic)
+          // Convert timelineItems to AnyNode array for grouping
+          const ungroupedNodes: AnyNode[] = timelineItems.map(item => item.data);
+          const groupedNodes = groupConsecutiveToolCalls(ungroupedNodes);
+
+          // Build internal nodes from grouped timeline
+          for (const node of groupedNodes) {
+            if (node.type === 'message' && node.role === 'assistant') {
+              // Model output node
+              const modelData = node as AnyNode & { content?: string; state: SessionState };
               internalNodes.push({
                 id: modelData.id,
                 type: 'model',
@@ -945,8 +950,27 @@ export function convertSessionToGraph(
               continue;
             }
 
-            if (item.itemType === 'tool') {
-              const toolData = item.data as AnyNode & { toolName: string; state: SessionState };
+            if (node.type === 'tool-group') {
+              // Tool group node
+              const toolGroup = node as ToolGroup;
+              const groupHooks = toolGroup.nodes.flatMap(n => n.hooks || []);
+              internalNodes.push({
+                id: toolGroup.id,
+                type: 'tool',
+                label: `${toolGroup.toolName} (${toolGroup.count})`,
+                toolName: toolGroup.toolName,
+                inputSummary: '', // No single input summary for groups
+                state: toolGroup.state,
+                nodeData: toolGroup.nodes,
+                count: toolGroup.count,
+                ...(groupHooks.length > 0 ? { hooks: groupHooks } : {}),
+              });
+              continue;
+            }
+
+            if (node.type === 'tool') {
+              // Single tool node
+              const toolData = node as AnyNode & { toolName: string; state: SessionState };
               const toolNode = parallelSubagent.nodes.find(n => n.id === toolData.id);
               const singleHooks = toolNode && 'hooks' in toolNode && Array.isArray(toolNode.hooks) ? toolNode.hooks : [];
               internalNodes.push({
@@ -954,7 +978,7 @@ export function convertSessionToGraph(
                 type: 'tool',
                 label: toolData.toolName,
                 toolName: toolData.toolName,
-                inputSummary: item.toolSummary?.inputSummary || '',
+                inputSummary: toolCalls.find(tc => tc.id === toolData.id)?.inputSummary || '',
                 state: toolData.state,
                 nodeData: toolNode || null,
                 ...(singleHooks.length > 0 ? { hooks: singleHooks } : {}),
@@ -1284,11 +1308,16 @@ export function convertSessionToGraph(
         // Sort chronologically
         timelineItems.sort((a, b) => a.timestamp - b.timestamp);
 
-        // Build internal nodes chronologically (no regrouping while open)
-        // This keeps node IDs stable and appends new internal nodes gradually.
-        for (const item of timelineItems) {
-          if (item.itemType === 'model') {
-            const modelData = item.data as AnyNode & { content?: string; state: SessionState };
+        // Group consecutive tool calls (matching main graph logic)
+        // Convert timelineItems to AnyNode array for grouping
+        const ungroupedNodes: AnyNode[] = timelineItems.map(item => item.data);
+        const groupedNodes = groupConsecutiveToolCalls(ungroupedNodes);
+
+        // Build internal nodes from grouped timeline
+        for (const node of groupedNodes) {
+          if (node.type === 'message' && node.role === 'assistant') {
+            // Model output node
+            const modelData = node as AnyNode & { content?: string; state: SessionState };
             internalNodes.push({
               id: modelData.id,
               type: 'model',
@@ -1300,8 +1329,27 @@ export function convertSessionToGraph(
             continue;
           }
 
-          if (item.itemType === 'tool') {
-            const toolData = item.data as AnyNode & { toolName: string; state: SessionState };
+          if (node.type === 'tool-group') {
+            // Tool group node
+            const toolGroup = node as ToolGroup;
+            const groupHooks = toolGroup.nodes.flatMap(n => n.hooks || []);
+            internalNodes.push({
+              id: toolGroup.id,
+              type: 'tool',
+              label: `${toolGroup.toolName} (${toolGroup.count})`,
+              toolName: toolGroup.toolName,
+              inputSummary: '', // No single input summary for groups
+              state: toolGroup.state,
+              nodeData: toolGroup.nodes,
+              count: toolGroup.count,
+              ...(groupHooks.length > 0 ? { hooks: groupHooks } : {}),
+            });
+            continue;
+          }
+
+          if (node.type === 'tool') {
+            // Single tool node
+            const toolData = node as AnyNode & { toolName: string; state: SessionState };
             const toolNode = subagent.nodes.find(n => n.id === toolData.id);
             const singleHooks = toolNode && 'hooks' in toolNode && Array.isArray(toolNode.hooks) ? toolNode.hooks : [];
             internalNodes.push({
@@ -1309,7 +1357,7 @@ export function convertSessionToGraph(
               type: 'tool',
               label: toolData.toolName,
               toolName: toolData.toolName,
-              inputSummary: item.toolSummary?.inputSummary || '',
+              inputSummary: toolCalls.find(tc => tc.id === toolData.id)?.inputSummary || '',
               state: toolData.state,
               nodeData: toolNode || null,
               ...(singleHooks.length > 0 ? { hooks: singleHooks } : {}),
