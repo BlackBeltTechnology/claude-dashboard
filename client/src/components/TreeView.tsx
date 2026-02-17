@@ -3,7 +3,7 @@ import type { Session, AnyNode, ToolGroup } from 'shared';
 import { TreeNode, TreeNodeData } from './TreeNode';
 import { useSessionStore } from '../store/sessionStore';
 import { groupConsecutiveToolCalls } from '../utils/groupingUtils';
-import { createNodeId } from '../utils/graphLayout';
+import { createNodeId, generateAgentColor } from '../utils/graphLayout';
 
 const styles = {
   container: {
@@ -279,7 +279,10 @@ export function TreeView({ onNodeSelect }: TreeViewProps) {
   const expandedSubagents = useSessionStore((state) => state.expandedSubagents);
   const toggleSubagentExpansion = useSessionStore((state) => state.toggleSubagentExpansion);
   const expandAllSubagentBoxes = useSessionStore((state) => state.expandAllSubagentBoxes);
+  const toggleSubagentBox = useSessionStore((state) => state.toggleSubagentBox);
+  const expandedSubagentBoxes = useSessionStore((state) => state.expandedSubagentBoxes);
   const setFocusedNode = useSessionStore((state) => state.setFocusedNode);
+  const setFollowPipelineEnd = useSessionStore((state) => state.setFollowPipelineEnd);
   const hiddenNodeTypes = useSessionStore((state) => state.hiddenNodeTypes);
   const nodeTypeFilters = useSessionStore((state) => state.nodeTypeFilters);
 
@@ -313,6 +316,7 @@ export function TreeView({ onNodeSelect }: TreeViewProps) {
 
   const selectNode = useCallback(
     (nodeKey: string, node: TreeNodeData, parentSubagentId?: string) => {
+      setFollowPipelineEnd(false);
       setSelectedNodeKey(nodeKey);
       onNodeSelect?.(node);
 
@@ -351,27 +355,37 @@ export function TreeView({ onNodeSelect }: TreeViewProps) {
         }
       }
     },
-    [onNodeSelect, setFocusedNode, selectedSessionId, expandAllSubagentBoxes]
+    [onNodeSelect, setFocusedNode, setFollowPipelineEnd, selectedSessionId, expandAllSubagentBoxes]
   );
 
   // Render a single node and its children recursively
   const renderNode = useCallback(
-    (node: TreeNodeData, depth: number, parentKey: string = '', parentSubagentId?: string, labelOverride?: string) => {
+    (node: TreeNodeData, depth: number, parentKey: string = '', parentSubagentId?: string, labelOverride?: string, agentColor?: string) => {
       const nodeKey = getNodeKey(node, parentKey);
 
-      // For tool-group nodes, use store's expandedGroups; for subagent nodes, use store's expandedSubagents; for others use local expandedNodes
+      // Detect subagent sessions (Session objects with short IDs)
+      const isSubagentSession = !('type' in node) && node.id.length < 20;
+
+      // For tool-group nodes, use store's expandedGroups; for subagent nodes, use store's expandedSubagents; for subagent sessions use expandedSubagentBoxes; for others use local expandedNodes
       const isToolGroup = 'type' in node && node.type === 'tool-group';
       const isSubagentNode = 'type' in node && node.type === 'subagent';
+      const isSubagentBoxExp = isSubagentSession && selectedSessionId
+        ? (expandedSubagentBoxes.get(selectedSessionId)?.has(node.id) ?? false)
+        : false;
       const isExpanded = isToolGroup
         ? expandedGroups.has(node.id)
         : isSubagentNode
           ? expandedSubagents.has(node.id)
-          : expandedNodes.has(nodeKey);
+          : isSubagentSession
+            ? isSubagentBoxExp
+            : expandedNodes.has(nodeKey);
       const onToggle = isToolGroup
         ? () => toggleGroupExpansion(node.id)
         : isSubagentNode
           ? () => toggleSubagentExpansion(node.id)
-          : () => toggleNode(nodeKey);
+          : isSubagentSession && selectedSessionId
+            ? () => toggleSubagentBox(selectedSessionId, node.id)
+            : () => toggleNode(nodeKey);
 
       const isSelected = selectedNodeKey === nodeKey;
       const hasChildren = nodeHasChildren(node);
@@ -386,7 +400,7 @@ export function TreeView({ onNodeSelect }: TreeViewProps) {
           const isGroupExpanded = expandedGroups.has(node.id);
           if (isGroupExpanded) {
             childNodes = node.nodes.map((toolNode) =>
-              renderNode(toolNode, depth + 1, nodeKey, parentSubagentId)
+              renderNode(toolNode, depth + 1, nodeKey, parentSubagentId, undefined, undefined)
             );
           }
         } else if ('type' in node) {
@@ -413,13 +427,19 @@ export function TreeView({ onNodeSelect }: TreeViewProps) {
                 role: 'user' as const,
                 content: requestText,
               };
-              subagentChildren.push(renderNode(requestNode, depth + 1, nodeKey, subagentSessionId, 'Request'));
+              subagentChildren.push(renderNode(requestNode, depth + 1, nodeKey, subagentSessionId, 'Request', undefined));
             }
 
-            // Add timeline items with proper labels
+            // Add timeline items with proper labels and agent color
             for (const { item } of timelineItems) {
               const itemLabel = getTimelineItemLabel(item, subagentMeta);
-              subagentChildren.push(renderNode(item as TreeNodeData, depth + 1, nodeKey, subagentSessionId, itemLabel));
+              // Compute agent color for subagent session items
+              let itemAgentColor: string | undefined;
+              if (!('type' in item)) {
+                const meta = subagentMeta.get(item.id);
+                itemAgentColor = generateAgentColor(item.id, meta?.agentType);
+              }
+              subagentChildren.push(renderNode(item as TreeNodeData, depth + 1, nodeKey, subagentSessionId, itemLabel, itemAgentColor));
             }
 
             // Add response entry at the end
@@ -434,7 +454,7 @@ export function TreeView({ onNodeSelect }: TreeViewProps) {
                 role: 'assistant' as const,
                 content: responseText,
               };
-              subagentChildren.push(renderNode(responseNode, depth + 1, nodeKey, subagentSessionId, 'Response'));
+              subagentChildren.push(renderNode(responseNode, depth + 1, nodeKey, subagentSessionId, 'Response', undefined));
             }
 
             childNodes = subagentChildren;
@@ -443,7 +463,13 @@ export function TreeView({ onNodeSelect }: TreeViewProps) {
             const sessionChildren: React.ReactNode[] = [];
             for (const { item } of timelineItems) {
               const itemLabel = getTimelineItemLabel(item, subagentMeta);
-              sessionChildren.push(renderNode(item as TreeNodeData, depth, nodeKey, undefined, itemLabel));
+              // Compute agent color for subagent session items
+              let itemAgentColor: string | undefined;
+              if (!('type' in item)) {
+                const meta = subagentMeta.get(item.id);
+                itemAgentColor = generateAgentColor(item.id, meta?.agentType);
+              }
+              sessionChildren.push(renderNode(item as TreeNodeData, depth, nodeKey, undefined, itemLabel, itemAgentColor));
             }
             childNodes = sessionChildren;
           }
@@ -460,6 +486,7 @@ export function TreeView({ onNodeSelect }: TreeViewProps) {
           hasChildren={hasChildren}
           isHighlighted={isMatch}
           labelOverride={labelOverride}
+          agentColor={agentColor}
           onToggle={onToggle}
           onSelect={() => selectNode(nodeKey, node, parentSubagentId)}
         >
@@ -467,7 +494,7 @@ export function TreeView({ onNodeSelect }: TreeViewProps) {
         </TreeNode>
       );
     },
-    [expandedNodes, selectedNodeKey, toggleNode, selectNode, searchTerm, expandedGroups, toggleGroupExpansion, expandedSubagents, toggleSubagentExpansion, hiddenNodeTypes, nodeTypeFilters]
+    [expandedNodes, selectedNodeKey, toggleNode, selectNode, searchTerm, expandedGroups, toggleGroupExpansion, expandedSubagents, toggleSubagentExpansion, toggleSubagentBox, expandedSubagentBoxes, selectedSessionId, hiddenNodeTypes, nodeTypeFilters]
   );
 
   // Filter to selected session if one is selected, otherwise show all

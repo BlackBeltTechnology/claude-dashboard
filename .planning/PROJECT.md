@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A real-time monitoring dashboard for Claude Code AI agent sessions. It watches `~/.claude/projects/` for JSONL session transcripts, parses them into a hierarchy (sessions -> messages -> tools/skills/subagents), and presents them via a local web UI with multiple views: horizontal timeline graph, tree view, and directory overview. Tool calls are grouped by type, sessions are named by working directory, and every node is clickable for full metadata inspection. Built as a TypeScript monorepo with Express/WebSocket backend and React frontend.
+A real-time monitoring dashboard for Claude Code AI agent sessions. It watches `~/.claude/projects/` for JSONL session transcripts, parses them into a hierarchy (sessions -> messages -> tools/skills/subagents), and presents them via a local web UI with directory-first navigation, horizontal timeline graph, tree view, and detailed node inspection. Sessions are navigable from a directory overview, subagent workflows are expandable inline with internal nodes, and every element is clickable for full metadata. Content-level filtering enables drilling into specific tools, agents, or prompts. Built as a TypeScript monorepo with Express/WebSocket backend and React frontend.
 
 ## Core Value
 
@@ -30,21 +30,27 @@ Make Claude Code agent activity visible and navigable — users can see what's h
 - ✓ Session titles from first user prompt — v1.0
 - ✓ Browser-only notifications with working directory names — v1.0
 - ✓ Agent name extraction from ~/.claude/agents/*.md definition files — v1.0
+- ✓ Directory graph as sole navigation (removed left sidebar session list) — v1.1
+- ✓ Active/archived session state filters in directory graph view — v1.1
+- ✓ Session nodes display first command title (skip /clear) — v1.1
+- ✓ User prompt nodes visible in session timeline — v1.1
+- ✓ /clear commands rendered as context-reset marker nodes — v1.1
+- ✓ Tool calls clickable directly on agent nodes to open tool metadata — v1.1
+- ✓ Agent metadata panel shows request/response only (no tool list) — v1.1
+- ✓ Subagent request/response visible in graph and tree views — v1.1
+- ✓ Tree view chronological ordering fix — v1.1
+- ✓ Tree view nesting depth reduction — v1.1
+- ✓ Session node last command display and clear-session indicator — post-v1.1
+- ✓ 4-state session detection (active/waiting/idle/completed) — post-v1.1
+- ✓ Expandable subagent workflow boxes with internal nodes — post-v1.1
+- ✓ Subagent internal nodes promoted to real React Flow nodes — post-v1.1
+- ✓ Relative timestamps and state-priority sorting in directory overview — post-v1.1
+- ✓ Content-level filtering by tool name, agent name, prompt text, model response content — post-v1.1
+- ✓ Hook metadata badges and expandable group drill-down — post-v1.1
 
 ### Active
 
-#### Current Milestone: v1.1 Verbose Debugging
-
-- [ ] Directory graph as sole navigation (remove left sidebar session list)
-- [ ] Active/archived session state filters in directory graph view
-- [ ] Session nodes display first command title (skip /clear)
-- [ ] User prompt nodes visible in session timeline
-- [ ] /clear commands rendered as context-reset marker nodes
-- [ ] Tool calls clickable directly on agent nodes to open tool metadata
-- [ ] Agent metadata panel shows request/response only (no tool list)
-- [ ] Subagent request/response visible in graph and tree views
-- [ ] Tree view timeline ordering fix
-- [ ] Tree view nesting depth reduction
+No active milestone. Use `/gsd:new-milestone` to start next milestone.
 
 ### Out of Scope
 
@@ -57,11 +63,12 @@ Make Claude Code agent activity visible and navigable — users can see what's h
 ## Context
 
 - Monorepo: `server/` (Express + ws + chokidar), `client/` (React + Zustand + @xyflow), `shared/` (types)
-- ~9,800 LOC TypeScript across 39 source files
+- ~14,000 LOC TypeScript across ~50 source files
 - No test suite — all changes verified manually during development
 - Codebase mapped in `.planning/codebase/` with 7 analysis documents
 - Session data from Claude Code's JSONL transcript format with `cwd` field
 - v1.0 shipped 2026-02-11 with 11 phases, 22 plans, 23 quick tasks
+- v1.1 shipped 2026-02-12 with 4 phases, 7 plans (+ 5 post-v1.1 phases, 18 quick tasks)
 
 ## Constraints
 
@@ -83,6 +90,15 @@ Make Claude Code agent activity visible and navigable — users can see what's h
 | Browser-only notifications (removed server-side) | Simpler, no desktop notification dependencies | ✓ Good |
 | Component-local useState for ephemeral UI state | Tool expansion, hover state don't need Zustand persistence | ✓ Good |
 | Agent name extraction from YAML frontmatter | ~/.claude/agents/*.md files contain readable agent names | ✓ Good |
+| Directory graph as primary navigation entry point | Users start from working directories, drill into sessions — natural mental model | ✓ Good |
+| Atomic navigation actions (enterSession/exitToDirectory) | Batch state changes atomically to prevent UI desync | ✓ Good |
+| Tree panel as absolute-positioned overlay | Panel overlays graph without affecting viewport dimensions | ✓ Good |
+| UserPromptNode/ClearMarkerNode as dedicated types | Separate from MessageNodes enables timeline visibility with distinct styling | ✓ Good |
+| Callback prop pattern for nested tool clicks | onToolCallClick with stopPropagation avoids React Flow event conflicts | ✓ Good |
+| Node enrichment post-layout | Attach callbacks after layout computation keeps layout logic pure | ✓ Good |
+| Subagent boxes with expand/collapse state | Map<string, Set<string>> per-session state enables independent toggle | ✓ Good |
+| 4-state session machine (active/waiting/idle/completed) | Idle as default state — only actual work signals count as active | ✓ Good |
+| Two-pass filtering (category visibility + content matching) | Category toggle is fast; content filter is deep — orthogonal concerns | ✓ Good |
 
 ---
-*Last updated: 2026-02-11 after v1.1 milestone start*
+*Last updated: 2026-02-17 after v1.1 milestone completion*

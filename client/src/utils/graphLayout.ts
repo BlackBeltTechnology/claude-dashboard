@@ -77,7 +77,7 @@ type CustomNodeData = SessionNodeData | SubagentNodeData | SkillNodeData | ToolG
  * Prefers resolved color from agent definition, falls back to generated color.
  * Named agents get distinct colors, tasks get grey.
  */
-function generateAgentColor(agentId: string | undefined, agentType: string | undefined, resolvedColor?: string): string {
+export function generateAgentColor(agentId: string | undefined, agentType: string | undefined, resolvedColor?: string): string {
   // If a resolved color is provided from agent definition, use it
   if (resolvedColor) {
     return resolvedColor;
@@ -199,14 +199,17 @@ function extractToolCallSummaries(subagent: Session): ToolCallSummary[] {
 }
 
 /**
- * Detect parallel subagent groups by checking the parentId field on SubagentNodes.
+ * Detect parallel subagent groups by checking the messageId field on SubagentNodes.
  * In Claude's API, truly parallel tool calls appear as MULTIPLE tool_use content blocks
  * within a SINGLE assistant message. Sequential tool calls are in SEPARATE assistant messages.
- * The parentId (which is the assistant message UUID) is the definitive indicator:
- * - Same parentId = parallel (spawned in same assistant turn)
- * - Different parentId = sequential (spawned in different assistant turns)
- * Returns a map of parentId -> array of subagent session IDs.
+ * The messageId (which is the assistant message UUID) is the definitive indicator:
+ * - Same messageId = parallel (spawned in same assistant turn)
+ * - Different messageId = sequential (spawned in different assistant turns)
+ * Returns a map of messageId -> array of subagent session IDs.
  * Only includes groups with 2+ parallel subagents.
+ *
+ * Fallback: If messageId is missing, uses timestamp clustering (subagents created within
+ * 100ms of each other) as a heuristic for parallel execution.
  */
 function detectParallelSubagentGroups(
   subagents: Session[],
@@ -227,6 +230,9 @@ function detectParallelSubagentGroups(
     }
   }
 
+  // Track which subagents have been grouped
+  const groupedSubagentIds = new Set<string>();
+
   // Group subagents by messageId
   const messageIdGroups = new Map<string, string[]>();
   for (const subagent of subagents) {
@@ -237,12 +243,48 @@ function detectParallelSubagentGroups(
       messageIdGroups.set(messageId, []);
     }
     messageIdGroups.get(messageId)!.push(subagent.id);
+    groupedSubagentIds.add(subagent.id);
   }
 
-  // Only keep groups with 2+ subagents (truly parallel)
+  // Add groups with 2+ subagents to parallelGroups
   for (const [messageId, subagentIds] of messageIdGroups) {
     if (subagentIds.length >= 2) {
       parallelGroups.set(messageId, subagentIds);
+    }
+  }
+
+  // Fallback: For subagents without messageId, use timestamp clustering
+  // Subagents created within 100ms of each other are likely parallel
+  const ungroupedSubagents = subagents
+    .filter(s => !groupedSubagentIds.has(s.id))
+    .sort((a, b) => a.createdAt - b.createdAt);
+
+  if (ungroupedSubagents.length >= 2) {
+    let clusterIndex = 0;
+    let currentCluster: string[] = [ungroupedSubagents[0].id];
+    let clusterStartTime = ungroupedSubagents[0].createdAt;
+
+    for (let i = 1; i < ungroupedSubagents.length; i++) {
+      const timeDiff = ungroupedSubagents[i].createdAt - clusterStartTime;
+
+      if (timeDiff <= 100) {
+        // Within 100ms, add to current cluster
+        currentCluster.push(ungroupedSubagents[i].id);
+      } else {
+        // Time gap too large, finalize current cluster if it has 2+ members
+        if (currentCluster.length >= 2) {
+          parallelGroups.set(`fallback-cluster-${clusterIndex}`, currentCluster);
+          clusterIndex++;
+        }
+        // Start new cluster
+        currentCluster = [ungroupedSubagents[i].id];
+        clusterStartTime = ungroupedSubagents[i].createdAt;
+      }
+    }
+
+    // Finalize last cluster if it has 2+ members
+    if (currentCluster.length >= 2) {
+      parallelGroups.set(`fallback-cluster-${clusterIndex}`, currentCluster);
     }
   }
 
@@ -986,15 +1028,55 @@ export function convertSessionToGraph(
             }
           }
 
-          // Last: Response node
-          internalNodes.push({
-            id: `${parallelSubagent.id}-response`,
-            type: 'response',
-            label: 'Response',
-            state: parallelSubagent.state,
-            nodeData: null,
-            ...(responseHooks.length > 0 ? { hooks: responseHooks } : {}),
-          });
+          // Post-process: merge consecutive same-type internal nodes
+          const mergedInternalNodes: typeof internalNodes = [];
+          for (const iNode of internalNodes) {
+            const prev = mergedInternalNodes[mergedInternalNodes.length - 1];
+            if (prev && iNode.type === 'tool' && prev.type === 'tool' && iNode.toolName === prev.toolName) {
+              // Merge tool into previous tool group
+              const prevNodes = Array.isArray(prev.nodeData) ? prev.nodeData : (prev.nodeData ? [prev.nodeData] : []);
+              const curNodes = Array.isArray(iNode.nodeData) ? iNode.nodeData : (iNode.nodeData ? [iNode.nodeData] : []);
+              const allNodes = [...prevNodes, ...curNodes];
+              const newCount = (prev.count || 1) + (iNode.count || 1);
+              prev.label = `${prev.toolName} (${newCount})`;
+              prev.count = newCount;
+              prev.nodeData = allNodes;
+              // Merge hooks
+              if (iNode.hooks && iNode.hooks.length > 0) {
+                prev.hooks = [...(prev.hooks || []), ...iNode.hooks];
+              }
+            } else if (prev && iNode.type === 'model' && prev.type === 'model') {
+              // Merge model outputs into a group
+              const prevNodes = Array.isArray(prev.nodeData) ? prev.nodeData : (prev.nodeData ? [prev.nodeData] : []);
+              const curNodes = Array.isArray(iNode.nodeData) ? iNode.nodeData : (iNode.nodeData ? [iNode.nodeData] : []);
+              const allNodes = [...prevNodes, ...curNodes];
+              const newCount = allNodes.length;
+              prev.label = `Model Output (${newCount})`;
+              prev.count = newCount;
+              prev.nodeData = allNodes;
+              // Concatenate content for filtering
+              if (iNode.content) {
+                prev.content = (prev.content || '') + '\n' + iNode.content;
+              }
+            } else {
+              mergedInternalNodes.push(iNode);
+            }
+          }
+          internalNodes.length = 0;
+          internalNodes.push(...mergedInternalNodes);
+
+          // Last: Response node — only add if subagent has completed or has a response
+          const hasResponse = parallelSubagent.state === 'completed' || responseText.trim() !== '';
+          if (hasResponse) {
+            internalNodes.push({
+              id: `${parallelSubagent.id}-response`,
+              type: 'response',
+              label: 'Response',
+              state: parallelSubagent.state,
+              nodeData: null,
+              ...(responseHooks.length > 0 ? { hooks: responseHooks } : {}),
+            });
+          }
 
           // Filter internal nodes based on hiddenNodeTypes
           let filteredInternalNodes = internalNodes.filter((iNode) => {
@@ -1031,17 +1113,14 @@ export function convertSessionToGraph(
           let lastNodeLabel = 'Response';
           let lastNodeType: 'request' | 'tool' | 'response' = 'response';
 
-          if (parallelSubagent.state === 'active' && toolCalls.length > 0) {
-            // If active, show last tool's input summary
+          if (parallelSubagent.state === 'completed' && hasResponse) {
+            lastNodeLabel = 'Response';
+            lastNodeType = 'response';
+          } else if (toolCalls.length > 0) {
             const lastTool = toolCalls[toolCalls.length - 1];
             lastNodeLabel = lastTool.inputSummary;
             lastNodeType = 'tool';
-          } else if (parallelSubagent.state === 'completed' && toolCalls.length > 0) {
-            // If completed, show "Response"
-            lastNodeLabel = 'Response';
-            lastNodeType = 'response';
-          } else if (toolCalls.length === 0) {
-            // No tools executed yet
+          } else {
             lastNodeLabel = 'Request';
             lastNodeType = 'request';
           }
@@ -1062,7 +1141,7 @@ export function convertSessionToGraph(
             const headerHeight = 38;
             const childNodeHeight = 65;
 
-            let rfChildCount = 2; // request + response
+            let rfChildCount = 1 + (hasResponse ? 1 : 0); // request + response (if present)
             for (const iNode of filteredInternalNodes) {
               if (iNode.type === 'tool' || iNode.type === 'model') rfChildCount++;
             }
@@ -1165,24 +1244,26 @@ export function convertSessionToGraph(
                 }
               }
 
-              // 3. Response node
-              const responseNodeId = createNodeId(session.id, `${parallelSubagent.id}-response`);
-              nodes.push({
-                id: responseNodeId,
-                type: 'response',
-                position: { x: boxPadding + childIdx * childStep, y: headerHeight },
-                parentId: boxNodeId,
-                extent: 'parent' as const,
-                data: {
-                  label: 'Response',
-                  state: parallelSubagent.state,
-                  summary: responseText,
-                  agentType,
-                  agentColor: computedAgentColor,
-                  ...(responseHooks.length > 0 ? { hooks: responseHooks } : {}),
-                },
-              } as Node<ResponseNodeData>);
-              childNodeIds.push(responseNodeId);
+              // 3. Response node — only add if subagent has completed or has a response
+              if (hasResponse) {
+                const responseNodeId = createNodeId(session.id, `${parallelSubagent.id}-response`);
+                nodes.push({
+                  id: responseNodeId,
+                  type: 'response',
+                  position: { x: boxPadding + childIdx * childStep, y: headerHeight },
+                  parentId: boxNodeId,
+                  extent: 'parent' as const,
+                  data: {
+                    label: 'Response',
+                    state: parallelSubagent.state,
+                    summary: responseText,
+                    agentType,
+                    agentColor: computedAgentColor,
+                    ...(responseHooks.length > 0 ? { hooks: responseHooks } : {}),
+                  },
+                } as Node<ResponseNodeData>);
+                childNodeIds.push(responseNodeId);
+              }
 
               // 4. Internal edges between child nodes
               for (let i = 0; i < childNodeIds.length - 1; i++) {
@@ -1365,15 +1446,55 @@ export function convertSessionToGraph(
           }
         }
 
-        // Last: Response node
-        internalNodes.push({
-          id: `${subagent.id}-response`,
-          type: 'response',
-          label: 'Response',
-          state: subagent.state,
-          nodeData: null,
-          ...(responseHooks.length > 0 ? { hooks: responseHooks } : {}),
-        });
+        // Post-process: merge consecutive same-type internal nodes
+        const mergedInternalNodes: typeof internalNodes = [];
+        for (const iNode of internalNodes) {
+          const prev = mergedInternalNodes[mergedInternalNodes.length - 1];
+          if (prev && iNode.type === 'tool' && prev.type === 'tool' && iNode.toolName === prev.toolName) {
+            // Merge tool into previous tool group
+            const prevNodes = Array.isArray(prev.nodeData) ? prev.nodeData : (prev.nodeData ? [prev.nodeData] : []);
+            const curNodes = Array.isArray(iNode.nodeData) ? iNode.nodeData : (iNode.nodeData ? [iNode.nodeData] : []);
+            const allNodes = [...prevNodes, ...curNodes];
+            const newCount = (prev.count || 1) + (iNode.count || 1);
+            prev.label = `${prev.toolName} (${newCount})`;
+            prev.count = newCount;
+            prev.nodeData = allNodes;
+            // Merge hooks
+            if (iNode.hooks && iNode.hooks.length > 0) {
+              prev.hooks = [...(prev.hooks || []), ...iNode.hooks];
+            }
+          } else if (prev && iNode.type === 'model' && prev.type === 'model') {
+            // Merge model outputs into a group
+            const prevNodes = Array.isArray(prev.nodeData) ? prev.nodeData : (prev.nodeData ? [prev.nodeData] : []);
+            const curNodes = Array.isArray(iNode.nodeData) ? iNode.nodeData : (iNode.nodeData ? [iNode.nodeData] : []);
+            const allNodes = [...prevNodes, ...curNodes];
+            const newCount = allNodes.length;
+            prev.label = `Model Output (${newCount})`;
+            prev.count = newCount;
+            prev.nodeData = allNodes;
+            // Concatenate content for filtering
+            if (iNode.content) {
+              prev.content = (prev.content || '') + '\n' + iNode.content;
+            }
+          } else {
+            mergedInternalNodes.push(iNode);
+          }
+        }
+        internalNodes.length = 0;
+        internalNodes.push(...mergedInternalNodes);
+
+        // Last: Response node — only add if subagent has completed or has a response
+        const hasResponse = subagent.state === 'completed' || responseText.trim() !== '';
+        if (hasResponse) {
+          internalNodes.push({
+            id: `${subagent.id}-response`,
+            type: 'response',
+            label: 'Response',
+            state: subagent.state,
+            nodeData: null,
+            ...(responseHooks.length > 0 ? { hooks: responseHooks } : {}),
+          });
+        }
 
         // Filter internal nodes based on hiddenNodeTypes
         let filteredInternalNodes = internalNodes.filter((iNode) => {
@@ -1410,17 +1531,14 @@ export function convertSessionToGraph(
         let lastNodeLabel = 'Response';
         let lastNodeType: 'request' | 'tool' | 'response' = 'response';
 
-        if (subagent.state === 'active' && toolCalls.length > 0) {
-          // If active, show last tool's input summary
+        if (subagent.state === 'completed' && hasResponse) {
+          lastNodeLabel = 'Response';
+          lastNodeType = 'response';
+        } else if (toolCalls.length > 0) {
           const lastTool = toolCalls[toolCalls.length - 1];
           lastNodeLabel = lastTool.inputSummary;
           lastNodeType = 'tool';
-        } else if (subagent.state === 'completed' && toolCalls.length > 0) {
-          // If completed, show "Response"
-          lastNodeLabel = 'Response';
-          lastNodeType = 'response';
-        } else if (toolCalls.length === 0) {
-          // No tools executed yet
+        } else {
           lastNodeLabel = 'Request';
           lastNodeType = 'request';
         }
@@ -1442,7 +1560,7 @@ export function convertSessionToGraph(
           const childNodeHeight = 65;
 
           // Count actual child RF nodes (request + tools/models + response) based on filtered nodes
-          let rfChildCount = 2; // request + response
+          let rfChildCount = 1 + (hasResponse ? 1 : 0); // request + response (if present)
           for (const iNode of filteredInternalNodes) {
             if (iNode.type === 'tool' || iNode.type === 'model') rfChildCount++;
           }
@@ -1545,24 +1663,26 @@ export function convertSessionToGraph(
               }
             }
 
-            // 3. Response node
-            const responseNodeId = createNodeId(session.id, `${subagent.id}-response`);
-            nodes.push({
-              id: responseNodeId,
-              type: 'response',
-              position: { x: boxPadding + childIdx * childStep, y: headerHeight },
-              parentId: boxNodeId,
-              extent: 'parent' as const,
-              data: {
-                label: 'Response',
-                state: subagent.state,
-                summary: responseText,
-                agentType,
-                agentColor: computedAgentColor,
-                ...(responseHooks.length > 0 ? { hooks: responseHooks } : {}),
-              },
-            } as Node<ResponseNodeData>);
-            childNodeIds.push(responseNodeId);
+            // 3. Response node — only add if subagent has completed or has a response
+            if (hasResponse) {
+              const responseNodeId = createNodeId(session.id, `${subagent.id}-response`);
+              nodes.push({
+                id: responseNodeId,
+                type: 'response',
+                position: { x: boxPadding + childIdx * childStep, y: headerHeight },
+                parentId: boxNodeId,
+                extent: 'parent' as const,
+                data: {
+                  label: 'Response',
+                  state: subagent.state,
+                  summary: responseText,
+                  agentType,
+                  agentColor: computedAgentColor,
+                  ...(responseHooks.length > 0 ? { hooks: responseHooks } : {}),
+                },
+              } as Node<ResponseNodeData>);
+              childNodeIds.push(responseNodeId);
+            }
 
             // 4. Internal edges between child nodes
             for (let i = 0; i < childNodeIds.length - 1; i++) {

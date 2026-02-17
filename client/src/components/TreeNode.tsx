@@ -97,6 +97,7 @@ interface TreeNodeProps {
   hasChildren: boolean;
   isHighlighted?: boolean;
   labelOverride?: string;
+  agentColor?: string;
   onToggle: () => void;
   onSelect: () => void;
   children?: React.ReactNode;
@@ -123,7 +124,10 @@ function getNodeIcon(node: TreeNodeData): string {
     return NODE_ICONS[node.type] || '\u{1F4C4}'; // Default document icon
   }
   // It's a Session (root or subagent)
-  return NODE_ICONS.session;
+  if (node.id.length < 20) {
+    return NODE_ICONS.subagent;  // Shuffle icon for subagent sessions
+  }
+  return NODE_ICONS.session;  // Folder for root sessions
 }
 
 function getNodeLabel(node: TreeNodeData): string {
@@ -191,6 +195,7 @@ export function TreeNode({
   hasChildren,
   isHighlighted,
   labelOverride,
+  agentColor,
   onToggle,
   onSelect,
   children,
@@ -245,6 +250,21 @@ export function TreeNode({
 
         {/* Type icon */}
         <span style={styles.typeIcon}>{icon}</span>
+
+        {/* Agent color indicator for subagent sessions */}
+        {agentColor && (
+          <div
+            style={{
+              width: '8px',
+              height: '8px',
+              borderRadius: '50%',
+              backgroundColor: agentColor,
+              flexShrink: 0,
+              marginRight: '4px',
+              border: '1px solid rgba(255, 255, 255, 0.3)',
+            }}
+          />
+        )}
 
         {/* Status dot */}
         <div

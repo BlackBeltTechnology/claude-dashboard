@@ -184,5 +184,19 @@
     }
   },
   "active": "e2bd13cd951b6b95",
-  "lastOpenFiles": []
+  "lastOpenFiles": [
+    "client/vite.config.ts.timestamp-1770974735446-4640ec726dcab.mjs",
+    "shared/tsconfig.tsbuildinfo",
+    "shared/tsconfig.json",
+    "shared/src/index.ts",
+    "shared/src",
+    "client/vitest.config.ts",
+    "client/src/utils/toolFormatters.tsx",
+    "client/src/utils/sessionName.ts",
+    "client/src/utils/groupingUtils.ts",
+    "client/src/store/sessionStore.ts",
+    "client/src/store",
+    "README.md",
+    "AGENT_NODE_FIX.md"
+  ]
 }

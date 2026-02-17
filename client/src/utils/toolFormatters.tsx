@@ -422,7 +422,43 @@ function buildDiffHunks(oldText: string, newText: string, contextLines = 3): Dif
   for (let k = 0; k < ops.length; k += 1) {
     if (ops[k].type !== 'context') changeIndexes.push(k);
   }
-  if (changeIndexes.length === 0) return [];
+  if (changeIndexes.length === 0) {
+    // LCS found no changes, but caller detected a difference.
+    // Fall back to simple line-by-line diff.
+    if (oldText !== newText) {
+      const allOps: Array<{ type: 'context' | 'remove' | 'add'; text: string }> = [];
+      const maxLen = Math.max(oldLines.length, newLines.length);
+      for (let k = 0; k < maxLen; k++) {
+        const oldLine = k < oldLines.length ? oldLines[k] : undefined;
+        const newLine = k < newLines.length ? newLines[k] : undefined;
+        if (oldLine === newLine) {
+          allOps.push({ type: 'context', text: oldLine! });
+        } else {
+          if (oldLine !== undefined) allOps.push({ type: 'remove', text: oldLine });
+          if (newLine !== undefined) allOps.push({ type: 'add', text: newLine });
+        }
+      }
+      // Build a single hunk from all ops
+      let oLineNo = 0;
+      let nLineNo = 0;
+      const lines: DiffLine[] = allOps.map((op) => {
+        if (op.type === 'context') {
+          oLineNo++; nLineNo++;
+          return { type: 'context' as const, text: op.text, oldLine: oLineNo, newLine: nLineNo };
+        }
+        if (op.type === 'remove') {
+          oLineNo++;
+          return { type: 'remove' as const, text: op.text, oldLine: oLineNo };
+        }
+        nLineNo++;
+        return { type: 'add' as const, text: op.text, newLine: nLineNo };
+      });
+      const oLen = allOps.filter(o => o.type !== 'add').length;
+      const nLen = allOps.filter(o => o.type !== 'remove').length;
+      return [{ header: `@@ -1,${oLen} +1,${nLen} @@`, lines }];
+    }
+    return [];
+  }
 
   // Track line numbers at each op index (before applying op)
   const oldBefore: number[] = Array(ops.length + 1).fill(0);
@@ -513,7 +549,12 @@ function UnifiedDiff({ oldText, newText }: { oldText: string; newText: string })
       </button>
       {expanded && (
         <div style={styles.unifiedDiffBody}>
-          {hasChanges ? hunks.map((hunk, hunkIdx) => (
+          {hasChanges && hunks.length === 0 ? (
+            <>
+              <CollapsibleDiff title="Old" content={oldText} variant="old" />
+              <CollapsibleDiff title="New" content={newText} variant="new" />
+            </>
+          ) : hasChanges ? hunks.map((hunk, hunkIdx) => (
             <React.Fragment key={hunkIdx}>
               <span style={styles.unifiedDiffHunkHeader}>{hunk.header}</span>
               {hunk.lines.map((line, lineIdx) => {

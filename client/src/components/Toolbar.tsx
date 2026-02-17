@@ -206,6 +206,41 @@ const styles = {
     borderRadius: '50%',
     backgroundColor: '#10b981',
   },
+  switchButton: {
+    padding: '4px 12px',
+    fontSize: '12px',
+    fontWeight: 500,
+    background: '#1a1a2e',
+    border: '1px solid #374151',
+    borderRadius: '12px',
+    color: '#6b7280',
+    cursor: 'pointer',
+    transition: 'all 0.2s',
+    lineHeight: 1.2,
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+  },
+  switchButtonActive: {
+    padding: '4px 12px',
+    fontSize: '12px',
+    fontWeight: 500,
+    background: '#052e16',
+    border: '1px solid #16a34a',
+    borderRadius: '12px',
+    color: '#22c55e',
+    cursor: 'pointer',
+    transition: 'all 0.2s',
+    lineHeight: 1.2,
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+  },
+  switchDot: {
+    width: '8px',
+    height: '8px',
+    borderRadius: '50%',
+  },
 };
 
 export function Toolbar({ connected, onOpenSettings }: ToolbarProps) {
@@ -220,6 +255,7 @@ export function Toolbar({ connected, onOpenSettings }: ToolbarProps) {
   const toggleTreePanel = useSessionStore((state) => state.toggleTreePanel);
   const expandAllSubagentBoxes = useSessionStore((state) => state.expandAllSubagentBoxes);
   const collapseAllSubagentBoxes = useSessionStore((state) => state.collapseAllSubagentBoxes);
+  const expandedSubagentBoxes = useSessionStore((state) => state.expandedSubagentBoxes);
   const jumpToEnd = useSessionStore((state) => state.jumpToEnd);
   const followPipelineEnd = useSessionStore((state) => state.followPipelineEnd);
   const setFollowPipelineEnd = useSessionStore((state) => state.setFollowPipelineEnd);
@@ -418,39 +454,37 @@ export function Toolbar({ connected, onOpenSettings }: ToolbarProps) {
             </div>
           )}
         </div>
-        {hasSubagents && (
-          <>
+        {hasSubagents && selectedSessionId && (() => {
+          const sessionBoxes = expandedSubagentBoxes.get(selectedSessionId);
+          const allExpanded = selectedSession && selectedSession.subagents.length > 0 && selectedSession.subagents.every(s => sessionBoxes?.has(s.id));
+
+          return (
             <button
-              style={styles.button}
+              style={allExpanded ? styles.switchButtonActive : styles.switchButton}
               onClick={() => {
                 if (selectedSession && selectedSessionId) {
-                  const allSubagentIds = selectedSession.subagents.map(s => s.id);
-                  expandAllSubagentBoxes(selectedSessionId, allSubagentIds);
+                  if (allExpanded) {
+                    collapseAllSubagentBoxes(selectedSessionId);
+                  } else {
+                    const allSubagentIds = selectedSession.subagents.map(s => s.id);
+                    expandAllSubagentBoxes(selectedSessionId, allSubagentIds);
+                  }
                 }
               }}
-              title="Expand all agent boxes"
-              onMouseEnter={(e) => handleButtonHover(e, true)}
-              onMouseLeave={(e) => handleButtonHover(e, false)}
+              title={allExpanded ? 'Collapse all agent boxes' : 'Expand all agent boxes'}
             >
-              Expand All
+              <div
+                style={{
+                  ...styles.switchDot,
+                  backgroundColor: allExpanded ? '#22c55e' : '#374151',
+                }}
+              />
+              {allExpanded ? 'Agents: ON' : 'Agents: OFF'}
             </button>
-            <button
-              style={styles.button}
-              onClick={() => {
-                if (selectedSessionId) {
-                  collapseAllSubagentBoxes(selectedSessionId);
-                }
-              }}
-              title="Collapse all agent boxes"
-              onMouseEnter={(e) => handleButtonHover(e, true)}
-              onMouseLeave={(e) => handleButtonHover(e, false)}
-            >
-              Collapse All
-            </button>
-          </>
-        )}
+          );
+        })()}
         <button
-          style={followPipelineEnd ? { ...styles.button, color: '#eee', borderColor: '#e94560' } : styles.button}
+          style={followPipelineEnd ? styles.switchButtonActive : styles.switchButton}
           onClick={(e) => {
             if (e.shiftKey) {
               jumpToEnd();
@@ -465,14 +499,14 @@ export function Toolbar({ connected, onOpenSettings }: ToolbarProps) {
           title={followPipelineEnd
             ? 'Auto-follow END is ON (click to turn off, Shift+click to jump once)'
             : 'Auto-follow END is OFF (click to turn on, Shift+click to jump once)'}
-          onMouseEnter={(e) => handleButtonHover(e, true)}
-          onMouseLeave={(e) => {
-            if (!followPipelineEnd) {
-              handleButtonHover(e, false);
-            }
-          }}
         >
-          {followPipelineEnd ? '\u21E5 End: ON' : '\u21E5 End: OFF'}
+          <div
+            style={{
+              ...styles.switchDot,
+              backgroundColor: followPipelineEnd ? '#22c55e' : '#374151',
+            }}
+          />
+          Follow End
         </button>
         {otherActiveSessions.length > 0 && (
           <>

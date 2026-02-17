@@ -2,17 +2,17 @@
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-02-11)
+See: .planning/PROJECT.md (updated 2026-02-17)
 
 **Core value:** Make Claude Code agent activity visible and navigable — users can see what's happening across all their sessions at a glance and drill into any detail.
-**Current focus:** v1.1 Verbose Debugging — MILESTONE COMPLETE
+**Current focus:** Planning next milestone
 
 ## Current Position
 
-Phase: 20 of 20 (Advanced Node Filtering by Type, Agent Name, Prompt Text, and Model Response Content)
-Plan: 02 of 02 COMPLETE
-Status: Phase complete. Content-level filtering fully implemented with UI controls in toolbar. Users can filter nodes by tool name, agent name, prompt text, model response content, and skill name. Filter inputs appear for visible categories, active filters show visual indicators on chips (green dots), inline clear buttons (×) for removing filters, and GraphView wired to layout engine with full reactivity.
-Last activity: 2026-02-13 - Quick task 42: Create comprehensive README.md with setup and GSD guide
+Phase: All phases complete (20 phases across v1.0, v1.1, and post-v1.1 work)
+Plan: All plans complete
+Status: v1.1 milestone archived. Phases 16-20 completed as un-milestoned work. Ready for next milestone.
+Last activity: 2026-02-17 - v1.1 milestone completion and archival
 
 Progress: [████████████████████] 100% (43/43 plans across all phases)
 
@@ -143,16 +143,9 @@ Full decision log in PROJECT.md section "Key Decisions" with 46+ entries.
 
 None.
 
-### v1.1 Milestone Requirements
+### v1.1 Milestone (ARCHIVED)
 
-**13 requirements across 4 phases:**
-
-- Phase 12 (Navigation): NAV-01, NAV-02, NAV-03, NAV-04
-- Phase 13 (Timeline): TIME-01, TIME-02, TIME-03
-- Phase 14 (Agent Debugging): AGNT-01, AGNT-02, AGNT-03, AGNT-04
-- Phase 15 (Tree View): TREE-01, TREE-02
-
-**Milestone Goal:** Enable deep debugging visibility with directory-first navigation, visible user prompts and commands, clickable agent tool calls, and improved tree view timeline.
+v1.1 Verbose Debugging shipped 2026-02-12. 13/13 requirements satisfied. Archived to `.planning/milestones/`.
 
 ### Quick Tasks Completed
 
@@ -175,6 +168,8 @@ None.
 | 40 | Show hooks in expandable group drill-down for each tool call | 2026-02-13 | N/A | [40-show-hooks-in-expandable-group-drill-dow](./quick/40-show-hooks-in-expandable-group-drill-dow/) |
 | 41 | Replace icon for hooks with a literal hook | 2026-02-13 | N/A | [41-replace-icon-for-hooks-with-a-literal-ho](./quick/41-replace-icon-for-hooks-with-a-literal-ho/) |
 | 42 | Create comprehensive README.md with setup and GSD guide | 2026-02-13 | N/A | [42-create-comprehensive-readme-md-with-setu](./quick/42-create-comprehensive-readme-md-with-setu/) |
+| 43 | Tree-graph subagent collapse sync and visual distinction | 2026-02-17 | N/A | [43-tree-graph-subagent-collapse-sync-and-tr](./quick/43-tree-graph-subagent-collapse-sync-and-tr/) |
+| 44 | UX fixes: follow-end toggle, switch buttons, edit diff, subagent tool grouping | 2026-02-17 | N/A | [44-ux-fixes-follow-end-toggle-switch-button](./quick/44-ux-fixes-follow-end-toggle-switch-button/) |
 
 ### Blockers/Concerns
 
@@ -186,7 +181,7 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-02-13
-Stopped at: Completed quick task 39 — Active filter for sessions shows only running state.
+Last session: 2026-02-17
+Stopped at: Completed quick task 44 — UX fixes: follow-end toggle, switch buttons, edit diff, subagent tool grouping.
 Resume file: None
 Next: All planned work complete
