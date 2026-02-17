@@ -1037,7 +1037,7 @@ export function convertSessionToGraph(
               const prevNodes = Array.isArray(prev.nodeData) ? prev.nodeData : (prev.nodeData ? [prev.nodeData] : []);
               const curNodes = Array.isArray(iNode.nodeData) ? iNode.nodeData : (iNode.nodeData ? [iNode.nodeData] : []);
               const allNodes = [...prevNodes, ...curNodes];
-              const newCount = (prev.count || 1) + (iNode.count || 1);
+              const newCount = allNodes.length;
               prev.label = `${prev.toolName} (${newCount})`;
               prev.count = newCount;
               prev.nodeData = allNodes;
@@ -1455,7 +1455,7 @@ export function convertSessionToGraph(
             const prevNodes = Array.isArray(prev.nodeData) ? prev.nodeData : (prev.nodeData ? [prev.nodeData] : []);
             const curNodes = Array.isArray(iNode.nodeData) ? iNode.nodeData : (iNode.nodeData ? [iNode.nodeData] : []);
             const allNodes = [...prevNodes, ...curNodes];
-            const newCount = (prev.count || 1) + (iNode.count || 1);
+            const newCount = allNodes.length;
             prev.label = `${prev.toolName} (${newCount})`;
             prev.count = newCount;
             prev.nodeData = allNodes;
