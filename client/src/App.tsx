@@ -44,6 +44,22 @@ function App() {
     }
   }, [lastMessage, handleWebSocketMessage]);
 
+  // Safety guard: auto-navigate to directory if selected session has disappeared
+  const sessions = useSessionStore((s) => s.sessions);
+  const selectedSessionId = useSessionStore((s) => s.selectedSessionId);
+  const navigationView = useSessionStore((s) => s.navigationView);
+  const exitToDirectory = useSessionStore((s) => s.exitToDirectory);
+
+  useEffect(() => {
+    if (
+      navigationView === 'session-timeline' &&
+      selectedSessionId &&
+      !sessions.find((s) => s.id === selectedSessionId)
+    ) {
+      exitToDirectory();
+    }
+  }, [sessions, selectedSessionId, navigationView, exitToDirectory]);
+
   // Browser notifications for 'waiting' state changes
   useNotifications(lastMessage);
 

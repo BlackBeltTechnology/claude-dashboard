@@ -12,7 +12,7 @@ See: .planning/PROJECT.md (updated 2026-02-17)
 Phase: All phases complete (20 phases across v1.0, v1.1, and post-v1.1 work)
 Plan: All plans complete
 Status: v1.1 milestone archived. Phases 16-20 completed as un-milestoned work. Ready for next milestone.
-Last activity: 2026-02-17 - v1.1 milestone completion and archival
+Last activity: 2026-02-17 - Completed quick task 46: Auto-navigate back to directory view when current session is deleted
 
 Progress: [████████████████████] 100% (43/43 plans across all phases)
 
@@ -171,6 +171,7 @@ v1.1 Verbose Debugging shipped 2026-02-12. 13/13 requirements satisfied. Archive
 | 43 | Tree-graph subagent collapse sync and visual distinction | 2026-02-17 | N/A | [43-tree-graph-subagent-collapse-sync-and-tr](./quick/43-tree-graph-subagent-collapse-sync-and-tr/) |
 | 44 | UX fixes: follow-end toggle, switch buttons, edit diff, subagent tool grouping | 2026-02-17 | N/A | [44-ux-fixes-follow-end-toggle-switch-button](./quick/44-ux-fixes-follow-end-toggle-switch-button/) |
 | 45 | Metadata detail panel auto-refresh with live data | 2026-02-17 | N/A | [45-metadata-should-update-when-a-tool-model](./quick/45-metadata-should-update-when-a-tool-model/) |
+| 46 | Auto-navigate back to directory view when session disappears | 2026-02-17 | N/A | [46-auto-navigate-back-to-directory-view-whe](./quick/46-auto-navigate-back-to-directory-view-whe/) |
 
 ### Blockers/Concerns
 
@@ -183,6 +184,6 @@ v1.1 Verbose Debugging shipped 2026-02-12. 13/13 requirements satisfied. Archive
 ## Session Continuity
 
 Last session: 2026-02-17
-Stopped at: Completed quick task 45 — Metadata detail panel auto-refresh with live data.
+Stopped at: Completed quick task 46 — Auto-navigate back to directory view when session disappears.
 Resume file: None
 Next: All planned work complete

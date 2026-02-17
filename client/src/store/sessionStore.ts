@@ -515,6 +515,27 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
         }
       }
 
+      // Auto-navigate to directory view if the currently selected session has disappeared
+      if (
+        state.navigationView === 'session-timeline' &&
+        state.selectedSessionId &&
+        !sessions.find((s) => s.id === state.selectedSessionId)
+      ) {
+        // Session has disappeared from the snapshot - reset navigation
+        return {
+          sessions,
+          expandedDirectories,
+          navigationView: 'directory',
+          selectedSessionId: null,
+          currentDirectoryCwd: null,
+          treePanelOpen: false,
+          focusedNodeId: null,
+          viewMode: 'directory',
+          selectedNodeData: null,
+          selectedGroupId: null,
+        };
+      }
+
       return { sessions, expandedDirectories };
     });
   },
