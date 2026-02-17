@@ -678,6 +678,7 @@ export function convertSessionToGraph(
           toolName: toolGroup.toolName,
           count: toolGroup.count,
           groupId: toolGroup.id,
+          nodeData: toolGroup.nodes,
           ...(groupHooks.length > 0 ? { hooks: groupHooks } : {}),
         },
       };
@@ -711,6 +712,7 @@ export function convertSessionToGraph(
           toolName: toolNode.toolName,
           count: 1,
           groupId: toolNode.id,
+          nodeData: [toolNode],
           ...(toolNode.hooks && toolNode.hooks.length > 0 ? { hooks: toolNode.hooks } : {}),
         },
       };
@@ -1216,6 +1218,7 @@ export function convertSessionToGraph(
                       toolName: iNode.toolName || 'Tool',
                       count: iNode.count || 1,
                       groupId: iNode.id,
+                      nodeData: Array.isArray(iNode.nodeData) ? iNode.nodeData : (iNode.nodeData ? [iNode.nodeData] : []),
                       ...(iNode.hooks && iNode.hooks.length > 0 ? { hooks: iNode.hooks } : {}),
                     },
                   } as Node<ToolGroupNodeData>);
@@ -1635,6 +1638,7 @@ export function convertSessionToGraph(
                     toolName: iNode.toolName || 'Tool',
                     count: iNode.count || 1,
                     groupId: iNode.id,
+                    nodeData: Array.isArray(iNode.nodeData) ? iNode.nodeData : (iNode.nodeData ? [iNode.nodeData] : []),
                     ...(iNode.hooks && iNode.hooks.length > 0 ? { hooks: iNode.hooks } : {}),
                   },
                 } as Node<ToolGroupNodeData>);

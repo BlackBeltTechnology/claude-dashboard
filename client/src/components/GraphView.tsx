@@ -119,6 +119,7 @@ function GraphFocusHandler() {
   const lastFollowedNodeIdRef = useRef<string | null>(null);
   const lastFollowedPosRef = useRef<{ x: number; y: number } | null>(null);
   const didInitialFitRef = useRef(false);
+  const followPipelineEndRef = useRef(followPipelineEnd);
 
   const getRightmostByGeometry = useCallback((nodes: Node[], nodeMap: Map<string, Node>): Node | null => {
     if (nodes.length === 0) return null;
@@ -336,6 +337,9 @@ function GraphFocusHandler() {
 
   // Follow mode: keep jumping to latest rightmost node as pipeline grows
   useEffect(() => {
+    // Update ref synchronously so interval callback can check latest value
+    followPipelineEndRef.current = followPipelineEnd;
+
     if (!followPipelineEnd) return;
 
     // Initial focus when follow is turned on
@@ -348,6 +352,9 @@ function GraphFocusHandler() {
 
     // Poll for newly appended pipeline nodes and follow the true end target.
     const interval = setInterval(() => {
+      // Guard: check if follow-end is still enabled (prevents race condition on disable)
+      if (!followPipelineEndRef.current) return;
+
       const targetId = getEndTargetNodeId();
       if (!targetId) return;
 
@@ -644,12 +651,16 @@ export function GraphView() {
             const firstNodeId = parts[parts.length - 1];
 
             // Reconstruct the tool group by finding consecutive tool calls of the same type
-            // This matches the logic in groupingUtils.ts
-            const nonMessageNodes = session.nodes.filter(node => node.type !== 'message');
+            // Only use tools + assistant messages (matching graphLayout's grouping input)
+            // Other node types (subagent, user-prompt, etc.) are excluded so they don't
+            // create extra group breaks that differ from how the graph was built
+            const toolAndMsgNodes = session.nodes.filter(
+              n => n.type === 'tool' || (n.type === 'message' && (n as any).role === 'assistant')
+            );
             const toolRuns: ToolNodeType[][] = [];
             let currentRun: ToolNodeType[] = [];
 
-            for (const node of nonMessageNodes) {
+            for (const node of toolAndMsgNodes) {
               if (node.type === 'tool') {
                 if (currentRun.length === 0 || currentRun[currentRun.length - 1].toolName === node.toolName) {
                   currentRun.push(node as ToolNodeType);
@@ -672,11 +683,9 @@ export function GraphView() {
 
             // Find the run that contains the firstNodeId
             for (const run of toolRuns) {
-              if (run.length > 1 && run[0].toolName === extractedToolName) {
-                // This is a multi-item group - find if firstNodeId is in this run
+              if (run[0].toolName === extractedToolName) {
                 const matchingNode = run.find(n => n.id === firstNodeId);
                 if (matchingNode) {
-                  // Found the group - return all tool nodes in this run
                   return {
                     toolGroup: {
                       id: groupId,
@@ -808,31 +817,24 @@ export function GraphView() {
           setSelectedNodeData(foundNode.toolNode);
         }
       } else if (node.type === 'tool-group') {
-        const foundGroup = findToolGroupInSessions(node.id, node.data);
-        if (foundGroup) {
-          setSelectedNodeData(foundGroup.toolGroup);
+        const data = node.data as any;
+        // Use nodeData embedded in the RF node (set by graphLayout) — no reconstruction needed
+        if (data.nodeData && Array.isArray(data.nodeData) && data.nodeData.length > 0) {
+          setSelectedNodeData({
+            id: data.groupId,
+            type: 'tool-group',
+            toolName: data.toolName,
+            nodes: data.nodeData,
+            count: data.nodeData.length,
+            state: data.state,
+            timestamp: data.nodeData[0].timestamp,
+            parentId: data.nodeData[0].parentId,
+          } as any);
         } else {
-          // Fallback: for subagent-internal tool groups, search for the tool node directly
-          const searchForToolInSubagents = (): AnyNode | null => {
-            const searchSession = (session: Session): AnyNode | null => {
-              for (const sub of session.subagents) {
-                for (const n of sub.nodes) {
-                  if (n.type === 'tool' && n.id === (node.data as any).groupId) return n;
-                }
-                const nested = searchSession(sub);
-                if (nested) return nested;
-              }
-              return null;
-            };
-            for (const session of sessions) {
-              const found = searchSession(session);
-              if (found) return found;
-            }
-            return null;
-          };
-          const toolNode = searchForToolInSubagents();
-          if (toolNode) {
-            setSelectedNodeData(toolNode);
+          // Fallback: try reconstructing from sessions
+          const foundGroup = findToolGroupInSessions(node.id, node.data);
+          if (foundGroup) {
+            setSelectedNodeData(foundGroup.toolGroup);
           }
         }
       } else if (node.type === 'request') {
