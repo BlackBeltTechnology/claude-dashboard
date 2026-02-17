@@ -228,9 +228,45 @@ function GraphFocusHandler() {
     }
 
     // One or more subagent boxes are expanded
-    // Find rightmost node ONLY within expanded boxes
-    let rightmostNode: Node | null = null;
-    let rightmostEdge = -Infinity;
+    // Check if these boxes are part of a parallel group (fork/join structure)
+    // If they are, check if the join-node has successors - if yes, prefer nodes after the join
+
+    // Find join-nodes that the expanded boxes connect to
+    const expandedBoxIds = new Set(expandedBoxNodes.map(box => box.id));
+    const edgesFromBoxes = allEdges.filter(e => expandedBoxIds.has(e.source));
+    const joinNodeIds = new Set(
+      edgesFromBoxes
+        .map(e => e.target)
+        .filter(targetId => {
+          const targetNode = nodeMap.get(targetId);
+          return targetNode?.type === 'join-node';
+        })
+    );
+
+    // Check if any join-node has outgoing edges (meaning there are nodes AFTER the parallel group)
+    let parallelGroupHasSuccessors = false;
+    for (const joinId of joinNodeIds) {
+      const outgoingFromJoin = allEdges.some(e => e.source === joinId);
+      if (outgoingFromJoin) {
+        parallelGroupHasSuccessors = true;
+        break;
+      }
+    }
+
+    // If the parallel group has successors, ignore nodes inside the boxes
+    // and find the rightmost top-level node (which should be after the join)
+    if (parallelGroupHasSuccessors) {
+      const outgoing = new Set(allEdges.map((e) => e.source));
+      const sinkNodes = nonStructural.filter((n) => !outgoing.has(n.id));
+      const candidateNodes = sinkNodes.length > 0 ? sinkNodes : nonStructural;
+      const topLevel = candidateNodes.filter((n) => !n.parentId);
+      const rightmostTopLevel = getRightmostByGeometry(topLevel.length > 0 ? topLevel : candidateNodes, nodeMap);
+      return rightmostTopLevel?.id ?? null;
+    }
+
+    // Parallel group is the last structure, so find rightmost node within expanded boxes
+    let rightmostInBoxes: Node | null = null;
+    let rightmostBoxEdge = -Infinity;
 
     for (const expandedBox of expandedBoxNodes) {
       // Find all child nodes inside this expanded box
@@ -253,15 +289,44 @@ function GraphFocusHandler() {
           const w = localRightmost.measured?.width ?? localRightmost.width ?? 0;
           const rightEdge = absX + w;
 
-          if (rightEdge > rightmostEdge) {
-            rightmostEdge = rightEdge;
-            rightmostNode = localRightmost;
+          if (rightEdge > rightmostBoxEdge) {
+            rightmostBoxEdge = rightEdge;
+            rightmostInBoxes = localRightmost;
           }
         }
       }
     }
 
-    return rightmostNode?.id ?? null;
+    // Also check top-level nodes to compare against boxes
+    const outgoing = new Set(allEdges.map((e) => e.source));
+    const sinkNodes = nonStructural.filter((n) => !outgoing.has(n.id));
+    const candidateNodes = sinkNodes.length > 0 ? sinkNodes : nonStructural;
+    const topLevel = candidateNodes.filter((n) => !n.parentId);
+    const rightmostTopLevel = getRightmostByGeometry(topLevel.length > 0 ? topLevel : candidateNodes, nodeMap);
+
+    // Calculate absolute position for top-level rightmost
+    let rightmostTopLevelEdge = -Infinity;
+    if (rightmostTopLevel) {
+      let absX = rightmostTopLevel.position.x;
+      let absY = rightmostTopLevel.position.y;
+      let parentId = rightmostTopLevel.parentId;
+      while (parentId) {
+        const parent = nodeMap.get(parentId);
+        if (!parent) break;
+        absX += parent.position.x;
+        absY += parent.position.y;
+        parentId = parent.parentId;
+      }
+      const w = rightmostTopLevel.measured?.width ?? rightmostTopLevel.width ?? 0;
+      rightmostTopLevelEdge = absX + w;
+    }
+
+    // Return whichever is actually rightmost
+    if (rightmostBoxEdge > rightmostTopLevelEdge) {
+      return rightmostInBoxes?.id ?? null;
+    } else {
+      return rightmostTopLevel?.id ?? null;
+    }
   }, [getNodes, getEdges, getRightmostByGeometry, expandedSubagentBoxes, selectedSessionId]);
 
   const focusNodeById = useCallback((nodeId: string, xOffset = 0, duration = 220) => {
