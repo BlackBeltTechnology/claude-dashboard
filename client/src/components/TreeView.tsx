@@ -51,7 +51,8 @@ function getNodeKey(node: TreeNodeData, parentKey: string = ''): string {
 // Check if a node has children
 function nodeHasChildren(node: TreeNodeData): boolean {
   if ('type' in node && node.type === 'tool-group') {
-    return node.count > 1;
+    // Tool groups should NOT be expandable - they navigate to tool-group node in graph
+    return false;
   }
   if ('type' in node) {
     return false;
@@ -240,7 +241,7 @@ function buildSessionTimeline(
 
 /**
  * Get the tree label for a timeline item.
- * Returns a label override for model outputs and subagent sessions,
+ * Returns a label override for subagent sessions,
  * or undefined to use TreeNode's default label.
  */
 function getTimelineItemLabel(
@@ -248,11 +249,8 @@ function getTimelineItemLabel(
   subagentMeta?: Map<string, { agentType: string; agentName?: string }>
 ): string | undefined {
   if ('type' in item) {
-    // Model outputs: show "Model Output" instead of truncated content
-    if (item.type === 'message' && (item as any).role === 'assistant') {
-      return 'Model Output';
-    }
-    return undefined; // Use default TreeNode label
+    // Use default TreeNode label for all node types (including model outputs)
+    return undefined;
   }
 
   // Session (subagent) - look up agent metadata for proper naming
