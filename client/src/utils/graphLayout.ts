@@ -1188,6 +1188,7 @@ export function convertSessionToGraph(
                 id: requestNodeId,
                 type: 'request',
                 position: { x: boxPadding + childIdx * childStep, y: headerHeight },
+                width: childWidth,
                 parentId: boxNodeId,
                 extent: 'parent' as const,
                 data: {
@@ -1210,6 +1211,7 @@ export function convertSessionToGraph(
                     id: toolNodeId,
                     type: 'tool-group',
                     position: { x: boxPadding + childIdx * childStep, y: headerHeight },
+                    width: childWidth,
                     parentId: boxNodeId,
                     extent: 'parent' as const,
                     data: {
@@ -1230,6 +1232,7 @@ export function convertSessionToGraph(
                     id: modelNodeId,
                     type: 'model-output',
                     position: { x: boxPadding + childIdx * childStep, y: headerHeight },
+                    width: childWidth,
                     parentId: boxNodeId,
                     extent: 'parent' as const,
                     data: {
@@ -1254,6 +1257,7 @@ export function convertSessionToGraph(
                   id: responseNodeId,
                   type: 'response',
                   position: { x: boxPadding + childIdx * childStep, y: headerHeight },
+                  width: childWidth,
                   parentId: boxNodeId,
                   extent: 'parent' as const,
                   data: {
@@ -1608,6 +1612,7 @@ export function convertSessionToGraph(
               id: requestNodeId,
               type: 'request',
               position: { x: boxPadding + childIdx * childStep, y: headerHeight },
+              width: childWidth,
               parentId: boxNodeId,
               extent: 'parent' as const,
               data: {
@@ -1630,6 +1635,7 @@ export function convertSessionToGraph(
                   id: toolNodeId,
                   type: 'tool-group',
                   position: { x: boxPadding + childIdx * childStep, y: headerHeight },
+                  width: childWidth,
                   parentId: boxNodeId,
                   extent: 'parent' as const,
                   data: {
@@ -1650,6 +1656,7 @@ export function convertSessionToGraph(
                   id: modelNodeId,
                   type: 'model-output',
                   position: { x: boxPadding + childIdx * childStep, y: headerHeight },
+                  width: childWidth,
                   parentId: boxNodeId,
                   extent: 'parent' as const,
                   data: {
@@ -1674,6 +1681,7 @@ export function convertSessionToGraph(
                 id: responseNodeId,
                 type: 'response',
                 position: { x: boxPadding + childIdx * childStep, y: headerHeight },
+                width: childWidth,
                 parentId: boxNodeId,
                 extent: 'parent' as const,
                 data: {

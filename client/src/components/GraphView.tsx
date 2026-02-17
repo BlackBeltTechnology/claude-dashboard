@@ -167,13 +167,12 @@ function GraphFocusHandler() {
       ? (expandedSubagentBoxes.get(selectedSessionId) || new Set<string>())
       : new Set<string>();
 
-    // Find expanded subagent-box nodes that are ACTIVELY RUNNING
-    // Only follow into expanded boxes with active subagents — expanding a completed
-    // subagent for inspection should not hijack follow-end.
+    // Find expanded subagent-box nodes for follow-end tracking
+    // Follow into any expanded box regardless of state - users may want to inspect
+    // completed subagents with filters applied
     const expandedBoxNodes = allNodes.filter((n) =>
       n.type === 'subagent-box' &&
-      currentSessionExpandedBoxes.has((n.data as any)?.agentId) &&
-      (n.data as any)?.state === 'active'
+      currentSessionExpandedBoxes.has((n.data as any)?.agentId)
     );
 
     // If no subagent boxes are expanded, find center of fork-join area (parallel subagents)
@@ -881,6 +880,7 @@ export function GraphView() {
           // If it's an array of grouped messages, pass them all for expanded view
           if (Array.isArray(modelData.nodeData)) {
             setSelectedNodeData({
+              id: modelData.groupId || node.id,
               nodeData: modelData.nodeData,
               count: modelData.count,
             } as any);

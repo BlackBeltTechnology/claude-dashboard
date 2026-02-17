@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect, useCallback } from 'react';
+import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import type { ToolNode, ToolGroup, Session, SkillNode, SubagentNode, AnyNode } from 'shared';
 import { useSessionStore } from '../store/sessionStore';
 import { groupConsecutiveToolCalls } from '../utils/groupingUtils';
@@ -50,77 +50,108 @@ export function GroupDrillDownPanel() {
     };
   }, [selectedGroupId, handleClose]);
 
-  // Find the ToolGroup matching selectedGroupId
-  const findToolGroup = (): ToolGroup | null => {
-    if (!selectedGroupId) return null;
+  // Helper: Search a session for a tool group by ID
+  const searchSessionForGroup = useCallback((session: Session, groupId: string): ToolGroup | null => {
+    // Filter out message nodes and group tool calls
+    const nonMessageNodes = session.nodes.filter((node) => node.type !== 'message');
+    const grouped = groupConsecutiveToolCalls(nonMessageNodes);
 
-    // If selectedGroupData exists, return it directly
-    if (selectedGroupData && selectedGroupData.id === selectedGroupId) {
-      return selectedGroupData;
+    // Find the matching group
+    for (const item of grouped) {
+      if (item.type === 'tool-group' && item.id === groupId) {
+        return item;
+      }
     }
 
-    const searchSession = (session: Session): ToolGroup | null => {
-      // Filter out message nodes and group tool calls
-      const nonMessageNodes = session.nodes.filter((node) => node.type !== 'message');
-      const grouped = groupConsecutiveToolCalls(nonMessageNodes);
-
-      // Find the matching group
-      for (const item of grouped) {
-        if (item.type === 'tool-group' && item.id === selectedGroupId) {
-          return item;
-        }
-      }
-
-      // Recursively search subagents
-      for (const subagent of session.subagents) {
-        const found = searchSession(subagent);
-        if (found) return found;
-      }
-
-      return null;
-    };
-
-    for (const session of sessions) {
-      const found = searchSession(session);
+    // Recursively search subagents
+    for (const subagent of session.subagents) {
+      const found = searchSessionForGroup(subagent, groupId);
       if (found) return found;
     }
 
     return null;
-  };
+  }, []);
 
-  const toolGroup = findToolGroup();
+  // Find the ToolGroup matching selectedGroupId - memoized to recompute when sessions update
+  const toolGroup = useMemo(() => {
+    if (!selectedGroupId || selectedGroupId.startsWith('node-detail-')) return null;
+
+    for (const session of sessions) {
+      const found = searchSessionForGroup(session, selectedGroupId);
+      if (found) return found;
+    }
+
+    return null;
+  }, [sessions, selectedGroupId, searchSessionForGroup]);
+
+  // Re-derive node data from live sessions if it's a tool-group
+  const liveNodeData = useMemo(() => {
+    if (!selectedNodeData) return null;
+
+    // For tool-group type, re-derive from sessions
+    if ('type' in selectedNodeData && (selectedNodeData as any).type === 'tool-group') {
+      const groupId = selectedNodeData.id;
+      // Search sessions for matching tool group using searchSessionForGroup
+      for (const session of sessions) {
+        const found = searchSessionForGroup(session, groupId);
+        if (found) {
+          // Convert ToolGroup to selectedNodeData shape
+          return {
+            id: found.id,
+            type: 'tool-group',
+            toolName: found.toolName,
+            nodes: found.nodes,
+            count: found.count,
+            state: found.state,
+            timestamp: found.timestamp,
+            parentId: found.parentId,
+          };
+        }
+      }
+      // Fallback to snapshot if group no longer exists
+      return selectedNodeData;
+    }
+
+    // For model output groups (nodeData array), re-derive from sessions if possible
+    if ('nodeData' in (selectedNodeData as any) && Array.isArray((selectedNodeData as any).nodeData)) {
+      // These have count + nodeData - for now, the snapshot is acceptable since model outputs don't get appended to
+      return selectedNodeData;
+    }
+
+    return selectedNodeData;
+  }, [selectedNodeData, sessions, searchSessionForGroup]);
 
   // If selectedNodeData exists and no toolGroup was found, render individual node detail panel
-  if (selectedNodeData && !toolGroup) {
+  if (liveNodeData && !toolGroup) {
     // Determine header title based on node type
     let headerTitle = 'Node Details';
-    if ('type' in selectedNodeData) {
-      const nodeType = (selectedNodeData as any).type;
+    if ('type' in liveNodeData) {
+      const nodeType = (liveNodeData as any).type;
       if (nodeType === 'tool-group') {
         // ToolGroup type (not in AnyNode union)
-        headerTitle = `${(selectedNodeData as any).toolName} (${(selectedNodeData as any).count} calls)`;
+        headerTitle = `${(liveNodeData as any).toolName} (${(liveNodeData as any).count} calls)`;
       } else {
         switch (nodeType) {
           case 'session':
-            headerTitle = `Session: ${(selectedNodeData as any).summary || (selectedNodeData as any).sessionId}`;
+            headerTitle = `Session: ${(liveNodeData as any).summary || (liveNodeData as any).sessionId}`;
             break;
           case 'message':
             headerTitle = `Message`;
             break;
           case 'skill':
-            headerTitle = `Skill: ${(selectedNodeData as SkillNode).skillName}`;
+            headerTitle = `Skill: ${(liveNodeData as SkillNode).skillName}`;
             break;
           case 'subagent':
-            headerTitle = `Subagent: ${(selectedNodeData as any).agentName || (selectedNodeData as SubagentNode).agentType}`;
+            headerTitle = `Subagent: ${(liveNodeData as any).agentName || (liveNodeData as SubagentNode).agentType}`;
             break;
           case 'tool':
-            headerTitle = `Tool: ${(selectedNodeData as ToolNode).toolName}`;
+            headerTitle = `Tool: ${(liveNodeData as ToolNode).toolName}`;
             break;
         }
       }
     } else {
       // Session object (no 'type' property)
-      headerTitle = `Session: ${(selectedNodeData as any).summary || (selectedNodeData as any).id}`;
+      headerTitle = `Session: ${(liveNodeData as any).summary || (liveNodeData as any).id}`;
     }
 
     return (
@@ -186,7 +217,7 @@ export function GroupDrillDownPanel() {
           </div>
 
           {/* Detail view using NodeDetail component */}
-          <NodeDetail node={selectedNodeData as TreeNodeData} />
+          <NodeDetail node={liveNodeData as TreeNodeData} />
         </div>
       </>
     );
