@@ -12,7 +12,7 @@ See: .planning/PROJECT.md (updated 2026-02-17)
 Phase: All phases complete (20 phases across v1.0, v1.1, and post-v1.1 work)
 Plan: All plans complete
 Status: v1.1 milestone archived. Phases 16-20 completed as un-milestoned work. Ready for next milestone.
-Last activity: 2026-02-17 - Completed quick task 46: Auto-navigate back to directory view when current session is deleted
+Last activity: 2026-02-19 - Completed quick task 48: Add token counter to session toolbar
 
 Progress: [████████████████████] 100% (43/43 plans across all phases)
 
@@ -172,6 +172,8 @@ v1.1 Verbose Debugging shipped 2026-02-12. 13/13 requirements satisfied. Archive
 | 44 | UX fixes: follow-end toggle, switch buttons, edit diff, subagent tool grouping | 2026-02-17 | N/A | [44-ux-fixes-follow-end-toggle-switch-button](./quick/44-ux-fixes-follow-end-toggle-switch-button/) |
 | 45 | Metadata detail panel auto-refresh with live data | 2026-02-17 | N/A | [45-metadata-should-update-when-a-tool-model](./quick/45-metadata-should-update-when-a-tool-model/) |
 | 46 | Auto-navigate back to directory view when session disappears | 2026-02-17 | N/A | [46-auto-navigate-back-to-directory-view-whe](./quick/46-auto-navigate-back-to-directory-view-whe/) |
+| 47 | Agents switch shows Detailed Agents label with dot indicator | 2026-02-19 | N/A | [47-agents-switch-should-show-detailed-agent](./quick/47-agents-switch-should-show-detailed-agent/) |
+| 48 | Add token counter to session toolbar | 2026-02-19 | N/A | [48-add-token-counter-to-session-toolbar-sho](./quick/48-add-token-counter-to-session-toolbar-sho/) |
 
 ### Blockers/Concerns
 

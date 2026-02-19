@@ -243,6 +243,12 @@ const styles = {
   },
 };
 
+function formatTokenCount(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}k`;
+  return `${tokens}`;
+}
+
 export function Toolbar({ connected, onOpenSettings }: ToolbarProps) {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const navigationView = useSessionStore((state) => state.navigationView);
@@ -349,6 +355,14 @@ export function Toolbar({ connected, onOpenSettings }: ToolbarProps) {
           {'\u2190 Back'}
         </button>
         <h2 style={styles.sessionTitle}>{sessionTitle}</h2>
+        {selectedSession?.tokenUsage && selectedSession.tokenUsage.totalTokens > 0 && (
+          <span
+            style={{ fontSize: '12px', color: '#888', whiteSpace: 'nowrap' as const }}
+            title={`Input: ${selectedSession.tokenUsage.inputTokens.toLocaleString()}\nOutput: ${selectedSession.tokenUsage.outputTokens.toLocaleString()}\nCache read: ${selectedSession.tokenUsage.cacheReadInputTokens.toLocaleString()}\nCache creation: ${selectedSession.tokenUsage.cacheCreationInputTokens.toLocaleString()}`}
+          >
+            {formatTokenCount(selectedSession.tokenUsage.totalTokens)} tokens
+          </span>
+        )}
       </div>
       <div style={styles.rightSection}>
         <button
@@ -479,7 +493,7 @@ export function Toolbar({ connected, onOpenSettings }: ToolbarProps) {
                   backgroundColor: allExpanded ? '#22c55e' : '#374151',
                 }}
               />
-              {allExpanded ? 'Agents: ON' : 'Agents: OFF'}
+              Detailed Agents
             </button>
           );
         })()}

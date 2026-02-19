@@ -155,179 +155,38 @@ function GraphFocusHandler() {
   const getEndTargetNodeId = useCallback((): string | null => {
     const allNodes = getNodes();
     if (allNodes.length === 0) return null;
-    const allEdges = getEdges();
     const nodeMap = new Map(allNodes.map((n) => [n.id, n]));
 
-    // Ignore structural helper nodes from end targeting.
-    const nonStructural = allNodes.filter((n) => n.type !== 'session' && n.type !== 'join-node');
-    if (nonStructural.length === 0) return allNodes[0]?.id ?? null;
-
-    // Get expanded subagent box IDs for current session
-    const currentSessionExpandedBoxes = selectedSessionId
-      ? (expandedSubagentBoxes.get(selectedSessionId) || new Set<string>())
-      : new Set<string>();
-
-    // Find expanded subagent-box nodes for follow-end tracking
-    // Follow into any expanded box regardless of state - users may want to inspect
-    // completed subagents with filters applied
-    const expandedBoxNodes = allNodes.filter((n) =>
-      n.type === 'subagent-box' &&
-      currentSessionExpandedBoxes.has((n.data as any)?.agentId)
+    // Step 1: Find the rightmost TOP-LEVEL node (no parentId), excluding structural nodes.
+    // Dagre places nodes left-to-right in timeline order, so the rightmost top-level node
+    // is always the correct follow target regardless of parallel groups or subagent nesting.
+    const topLevel = allNodes.filter((n) =>
+      !n.parentId && n.type !== 'session' && n.type !== 'join-node'
     );
+    if (topLevel.length === 0) return allNodes[0]?.id ?? null;
 
-    // If no subagent boxes are expanded, find center of fork-join area (parallel subagents)
-    if (expandedBoxNodes.length === 0) {
-      // Find subagent-box nodes that are still actively running
-      const activeSubagentBoxes = allNodes.filter((n) =>
-        n.type === 'subagent-box' &&
-        (n.data as any)?.state === 'active'
-      );
+    const rightmostTopLevel = getRightmostByGeometry(topLevel, nodeMap);
+    if (!rightmostTopLevel) return null;
 
-      if (activeSubagentBoxes.length > 0) {
-        // Calculate center of active subagent boxes
-        let totalX = 0;
-        let totalY = 0;
-        for (const box of activeSubagentBoxes) {
-          const pos = nodeMap.get(box.id);
-          if (pos) {
-            const w = pos.measured?.width ?? pos.width ?? 0;
-            const h = pos.measured?.height ?? pos.height ?? 0;
-            totalX += pos.position.x + w / 2;
-            totalY += pos.position.y + h / 2;
-          }
-        }
-        const centerX = totalX / activeSubagentBoxes.length;
-        const centerY = totalY / activeSubagentBoxes.length;
+    // Step 2: If the rightmost top-level node is an EXPANDED subagent-box,
+    // dive into it and find the rightmost child node inside.
+    if (rightmostTopLevel.type === 'subagent-box') {
+      const boxData = rightmostTopLevel.data as any;
+      const currentSessionExpandedBoxes = selectedSessionId
+        ? (expandedSubagentBoxes.get(selectedSessionId) || new Set<string>())
+        : new Set<string>();
 
-        // Find the box closest to center as target
-        let closestBox: Node | null = null;
-        let closestDist = Infinity;
-        for (const box of activeSubagentBoxes) {
-          const w = box.measured?.width ?? box.width ?? 0;
-          const h = box.measured?.height ?? box.height ?? 0;
-          const boxCenterX = box.position.x + w / 2;
-          const boxCenterY = box.position.y + h / 2;
-          const dist = Math.sqrt(
-            Math.pow(boxCenterX - centerX, 2) + Math.pow(boxCenterY - centerY, 2)
-          );
-          if (dist < closestDist) {
-            closestDist = dist;
-            closestBox = box;
-          }
-        }
-        return closestBox?.id ?? null;
-      }
-
-      // No parallel subagents, fall back to regular rightmost node logic
-      const outgoing = new Set(allEdges.map((e) => e.source));
-      const sinkNodes = nonStructural.filter((n) => !outgoing.has(n.id));
-      const candidateNodes = sinkNodes.length > 0 ? sinkNodes : nonStructural;
-      const topLevel = candidateNodes.filter((n) => !n.parentId);
-      const tailTop = getRightmostByGeometry(topLevel.length > 0 ? topLevel : candidateNodes, nodeMap);
-      return tailTop?.id ?? null;
-    }
-
-    // One or more subagent boxes are expanded
-    // Check if these boxes are part of a parallel group (fork/join structure)
-    // If they are, check if the join-node has successors - if yes, prefer nodes after the join
-
-    // Find join-nodes that the expanded boxes connect to
-    const expandedBoxIds = new Set(expandedBoxNodes.map(box => box.id));
-    const edgesFromBoxes = allEdges.filter(e => expandedBoxIds.has(e.source));
-    const joinNodeIds = new Set(
-      edgesFromBoxes
-        .map(e => e.target)
-        .filter(targetId => {
-          const targetNode = nodeMap.get(targetId);
-          return targetNode?.type === 'join-node';
-        })
-    );
-
-    // Check if any join-node has outgoing edges (meaning there are nodes AFTER the parallel group)
-    let parallelGroupHasSuccessors = false;
-    for (const joinId of joinNodeIds) {
-      const outgoingFromJoin = allEdges.some(e => e.source === joinId);
-      if (outgoingFromJoin) {
-        parallelGroupHasSuccessors = true;
-        break;
-      }
-    }
-
-    // If the parallel group has successors, ignore nodes inside the boxes
-    // and find the rightmost top-level node (which should be after the join)
-    if (parallelGroupHasSuccessors) {
-      const outgoing = new Set(allEdges.map((e) => e.source));
-      const sinkNodes = nonStructural.filter((n) => !outgoing.has(n.id));
-      const candidateNodes = sinkNodes.length > 0 ? sinkNodes : nonStructural;
-      const topLevel = candidateNodes.filter((n) => !n.parentId);
-      const rightmostTopLevel = getRightmostByGeometry(topLevel.length > 0 ? topLevel : candidateNodes, nodeMap);
-      return rightmostTopLevel?.id ?? null;
-    }
-
-    // Parallel group is the last structure, so find rightmost node within expanded boxes
-    let rightmostInBoxes: Node | null = null;
-    let rightmostBoxEdge = -Infinity;
-
-    for (const expandedBox of expandedBoxNodes) {
-      // Find all child nodes inside this expanded box
-      const childNodes = allNodes.filter((n) => n.parentId === expandedBox.id);
-
-      if (childNodes.length > 0) {
-        const localRightmost = getRightmostByGeometry(childNodes, nodeMap);
-        if (localRightmost) {
-          // Calculate absolute right edge
-          let absX = localRightmost.position.x;
-          let absY = localRightmost.position.y;
-          let parentId = localRightmost.parentId;
-          while (parentId) {
-            const parent = nodeMap.get(parentId);
-            if (!parent) break;
-            absX += parent.position.x;
-            absY += parent.position.y;
-            parentId = parent.parentId;
-          }
-          const w = localRightmost.measured?.width ?? localRightmost.width ?? 0;
-          const rightEdge = absX + w;
-
-          if (rightEdge > rightmostBoxEdge) {
-            rightmostBoxEdge = rightEdge;
-            rightmostInBoxes = localRightmost;
-          }
+      if (boxData?.agentId && currentSessionExpandedBoxes.has(boxData.agentId)) {
+        const childNodes = allNodes.filter((n) => n.parentId === rightmostTopLevel.id);
+        if (childNodes.length > 0) {
+          const rightmostChild = getRightmostByGeometry(childNodes, nodeMap);
+          if (rightmostChild) return rightmostChild.id;
         }
       }
     }
 
-    // Also check top-level nodes to compare against boxes
-    const outgoing = new Set(allEdges.map((e) => e.source));
-    const sinkNodes = nonStructural.filter((n) => !outgoing.has(n.id));
-    const candidateNodes = sinkNodes.length > 0 ? sinkNodes : nonStructural;
-    const topLevel = candidateNodes.filter((n) => !n.parentId);
-    const rightmostTopLevel = getRightmostByGeometry(topLevel.length > 0 ? topLevel : candidateNodes, nodeMap);
-
-    // Calculate absolute position for top-level rightmost
-    let rightmostTopLevelEdge = -Infinity;
-    if (rightmostTopLevel) {
-      let absX = rightmostTopLevel.position.x;
-      let absY = rightmostTopLevel.position.y;
-      let parentId = rightmostTopLevel.parentId;
-      while (parentId) {
-        const parent = nodeMap.get(parentId);
-        if (!parent) break;
-        absX += parent.position.x;
-        absY += parent.position.y;
-        parentId = parent.parentId;
-      }
-      const w = rightmostTopLevel.measured?.width ?? rightmostTopLevel.width ?? 0;
-      rightmostTopLevelEdge = absX + w;
-    }
-
-    // Return whichever is actually rightmost
-    if (rightmostBoxEdge > rightmostTopLevelEdge) {
-      return rightmostInBoxes?.id ?? null;
-    } else {
-      return rightmostTopLevel?.id ?? null;
-    }
-  }, [getNodes, getEdges, getRightmostByGeometry, expandedSubagentBoxes, selectedSessionId]);
+    return rightmostTopLevel.id;
+  }, [getNodes, getRightmostByGeometry, expandedSubagentBoxes, selectedSessionId]);
 
   const focusNodeById = useCallback((nodeId: string, xOffset = 0, duration = 220) => {
     const allNodes = getNodes();
